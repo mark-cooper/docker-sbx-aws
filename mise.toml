@@ -18,6 +18,10 @@ run = "node scripts/sandbox.ts doctor"
 description = "Build and load a pinned agent template"
 run = "node scripts/sandbox.ts template"
 
+[tasks."sandbox:templates"]
+description = "Build and load every agent template"
+run = [{ task = "sandbox:template claude" }, { task = "sandbox:template codex" }]
+
 [tasks."sandbox:resume"]
 description = "Reattach to a managed sandbox, renewing its AWS session if near expiry"
 run = "node scripts/sandbox.ts resume"

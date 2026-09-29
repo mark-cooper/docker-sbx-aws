@@ -41,8 +41,7 @@ Install the prerequisites and configure Docker Sandboxes/model authentication th
 ```sh
 mise install
 npm ci --ignore-scripts  # development/typechecking only
-mise run sandbox:template claude
-mise run sandbox:template codex
+mise run sandbox:templates  # or one agent: mise run sandbox:template claude
 ```
 
 Templates build from immutable image digests in `config/runtime.json` and `sandbox/Dockerfile`, then load into the separate sandbox image store. Downloads and loading can take several minutes. AWS CLI, Node, Git, jq, and mise are checked during preparation. Template builds use no AWS credentials.
