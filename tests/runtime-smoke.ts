@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitEnvironment, run, successful } from "../scripts/lib/process.ts";
-import { configuration, unexpectedSecrets } from "../scripts/lib/sandbox.ts";
+import { checkSbxVersion, configuration, unexpectedSecrets } from "../scripts/lib/sandbox.ts";
 
 const env = {
   ...gitEnvironment(),
@@ -23,6 +23,9 @@ async function call(tool: string, args: string[], cwd?: string, input?: string) 
     `Runtime test ${tool}`,
   );
 }
+const cliVersion = await call("sbx", ["version"]);
+checkSbxVersion(cliVersion, runtime.minSbxVersion);
+console.log(`Testing against ${cliVersion} (minimum ${runtime.minSbxVersion}).`);
 try {
   const project = join(dir, "repo");
   await mkdir(project);
@@ -56,9 +59,10 @@ try {
       const info = JSON.parse(await call("sbx", ["inspect", name, "--json"]));
       assert.deepEqual(info.runtime_mounts, []);
       assert.ok(!info.workspace);
-      // The daemon, not just the CLI, must be the reviewed version: some sbx
-      // changes apply only after a daemon restart.
-      assert.equal(info.daemon_version, `v${runtime.sbxVersion}`);
+      // The daemon, not just the CLI, must meet the minimum and match the CLI:
+      // some sbx changes apply only after a daemon restart.
+      checkSbxVersion(info.daemon_version, runtime.minSbxVersion);
+      assert.equal(/v\d+\.\d+\.\d+/.exec(cliVersion)?.[0], info.daemon_version);
       assert.deepEqual(info.kits, []);
       // Copy the current bootstrap so edits can be tested before rebuilding.
       await call("sbx", ["cp", "sandbox/bootstrap.ts", `${name}:/tmp/bootstrap.ts`]);

@@ -19,7 +19,7 @@ const bootstrap = "/opt/readonly-sandbox/bootstrap.ts";
 const inputBundle = "/home/agent/readonly-input.bundle";
 const outputBundle = "/tmp/readonly-output.bundle";
 export interface Runtime {
-  sbxVersion: string;
+  minSbxVersion: string;
   templates: Record<string, { base: string; tag: string }>;
 }
 export interface LaunchOptions {
@@ -90,26 +90,29 @@ export function unexpectedSecrets(list: SecretList): string[] {
   return unexpected;
 }
 
-// config/runtime.json is the only place the reviewed sbx version is recorded;
-// install guidance is derived from it so a version bump is a one-line change.
-export function sbxInstallHint(
-  version: string,
-  platform: NodeJS.Platform = process.platform,
-  arch: string = process.arch,
-): string {
-  const release = `https://github.com/docker/sbx-releases/releases/download/v${version}`;
-  if (platform === "win32") return `winget install Docker.sbx --version ${version}`;
-  if (platform === "darwin") return `install ${release}/DockerSandboxes-darwin.dmg`;
-  const cpu = arch === "arm64" ? "arm64" : "amd64";
-  return `install ${release}/DockerSandboxes-linux-${cpu}-ubuntu2404.deb (or -ubuntu2604.deb / -rockylinux8.rpm for your distribution)`;
+// config/runtime.json records the oldest sbx version known to work. Newer
+// versions are accepted optimistically; when one breaks the launcher, fix it
+// and raise the minimum.
+export function sbxUpgradeHint(platform: NodeJS.Platform = process.platform): string {
+  if (platform === "win32") return "winget upgrade Docker.sbx";
+  if (platform === "darwin") return "brew upgrade docker/tap/sbx";
+  return "sudo apt install --only-upgrade docker-sbx (or the latest package from https://github.com/docker/sbx-releases/releases)";
 }
 
-export function checkSbxVersion(output: string, version: string): void {
-  if (output.includes(`v${version} `) || output.endsWith(`v${version}`)) return;
-  const found = /v\d+\.\d+\.\d+/.exec(output)?.[0] ?? "an unrecognized version";
-  throw new Error(
-    `This implementation requires sbx ${version}, found ${found}. To install it: ${sbxInstallHint(version)}. Newer versions need their CLI/policy compatibility reviewed before config/runtime.json is updated.`,
-  );
+const semver = (value: string) => value.split(".").map(Number);
+
+export function checkSbxVersion(output: string, minimum: string): void {
+  const found = /v(\d+\.\d+\.\d+)/.exec(output)?.[1];
+  if (!found)
+    throw new Error(
+      `Could not read the sbx version from "sbx version"; sbx ${minimum} or later is required.`,
+    );
+  const [have, need] = [semver(found), semver(minimum)];
+  const difference = have.map((part, i) => part - need[i]).find((delta) => delta !== 0) ?? 0;
+  if (difference < 0)
+    throw new Error(
+      `sbx ${minimum} or later is required, found v${found}. To upgrade: ${sbxUpgradeHint()}, then restart the sbx daemon.`,
+    );
 }
 
 export async function prerequisites(run: Runner, runtime: Runtime): Promise<void> {
@@ -117,7 +120,7 @@ export async function prerequisites(run: Runner, runtime: Runtime): Promise<void
   const version = /aws-cli\/2\.(\d+)\./.exec(aws);
   if (!version || Number(version[1]) < 32)
     throw new Error("AWS CLI v2.32 or later is required for aws login.");
-  checkSbxVersion(await sbx(run, ["version"], "sbx version check"), runtime.sbxVersion);
+  checkSbxVersion(await sbx(run, ["version"], "sbx version check"), runtime.minSbxVersion);
   await tool(run, "git", ["--version"], "Git version check");
   const mcp = await sbxJson<{ servers: unknown[] }>(
     run,

@@ -12,12 +12,12 @@ import {
   destroy,
   launch,
   resume,
-  sbxInstallHint,
+  sbxUpgradeHint,
   unexpectedSecrets,
 } from "../scripts/lib/sandbox.ts";
 import { loadState, saveState } from "../scripts/lib/state.ts";
 
-const { sbxVersion } = (await configuration()).runtime;
+const { minSbxVersion } = (await configuration()).runtime;
 
 const target: Target = {
   profile: "demo-project",
@@ -97,7 +97,7 @@ async function fixture(
       if (args[0] === "rev-parse")
         result = args.includes("--show-toplevel") ? project : "b".repeat(40);
       else result = "";
-    } else if (args[0] === "version") result = `sbx version: v${sbxVersion} test`;
+    } else if (args[0] === "version") result = `sbx version: v${minSbxVersion} test`;
     else if (args[0] === "mcp") result = { servers: [] };
     else if (args[0] === "secret") result = { secrets: control.secrets, custom_secrets: [] };
     else if (args[0] === "settings")
@@ -315,21 +315,19 @@ test("only model secrets are tolerated", () => {
   assert.equal(unexpectedSecrets({ secrets: [], custom_secrets: [{}] }).length, 1);
   assert.throws(() => unexpectedSecrets({}), /schema/);
 });
-test("sbx version mismatch names the found version and a pinned install command", () => {
-  checkSbxVersion(`sbx version: v${sbxVersion} (abc123)`, sbxVersion);
-  checkSbxVersion(`v${sbxVersion}`, sbxVersion);
-  assert.throws(
-    () => checkSbxVersion(`sbx version: v${sbxVersion}9 test`, sbxVersion),
-    (error: Error) =>
-      error.message.includes(`requires sbx ${sbxVersion}, found v${sbxVersion}9`) &&
-      error.message.includes(sbxInstallHint(sbxVersion)),
-  );
-  assert.throws(() => checkSbxVersion("garbage", sbxVersion), /unrecognized version/);
-  assert.equal(sbxInstallHint("1.2.3", "win32"), "winget install Docker.sbx --version 1.2.3");
-  assert.match(
-    sbxInstallHint("1.2.3", "darwin"),
-    /download\/v1\.2\.3\/DockerSandboxes-darwin\.dmg$/,
-  );
-  assert.match(sbxInstallHint("1.2.3", "linux", "arm64"), /v1\.2\.3\/DockerSandboxes-linux-arm64-/);
-  assert.match(sbxInstallHint("1.2.3", "linux", "x64"), /DockerSandboxes-linux-amd64-/);
+test("sbx version is a minimum: equal and newer pass, older names an upgrade command", () => {
+  for (const version of ["0.46.0", "0.46.1", "0.47.0", "0.100.0", "1.0.0"])
+    checkSbxVersion(`sbx version: v${version} abc123`, "0.46.0");
+  checkSbxVersion("v0.46.0", "0.46.0");
+  for (const version of ["0.45.9", "0.9.0", "0.4.60"])
+    assert.throws(
+      () => checkSbxVersion(`sbx version: v${version} abc123`, "0.46.0"),
+      (error: Error) =>
+        error.message.includes(`0.46.0 or later is required, found v${version}`) &&
+        error.message.includes(sbxUpgradeHint()),
+    );
+  assert.throws(() => checkSbxVersion("garbage", "0.46.0"), /Could not read the sbx version/);
+  assert.equal(sbxUpgradeHint("win32"), "winget upgrade Docker.sbx");
+  assert.equal(sbxUpgradeHint("darwin"), "brew upgrade docker/tap/sbx");
+  assert.match(sbxUpgradeHint("linux"), /docker-sbx/);
 });
