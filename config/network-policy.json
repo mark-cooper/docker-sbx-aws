@@ -1,0 +1,18 @@
+{
+  "agents": {
+    "claude": [
+      "api.anthropic.com",
+      "statsig.anthropic.com",
+      "platform.claude.com",
+      "claude.ai",
+      "console.anthropic.com"
+    ],
+    "codex": ["api.openai.com", "auth.openai.com", "chatgpt.com"]
+  },
+  "hosts": ["docs.aws.amazon.com"],
+  "awsDomains": {
+    "aws": ["**.amazonaws.com", "**.api.aws"],
+    "aws-us-gov": ["**.amazonaws.com", "**.api.aws"],
+    "aws-cn": ["**.amazonaws.com.cn"]
+  }
+}

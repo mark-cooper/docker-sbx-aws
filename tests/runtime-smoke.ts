@@ -1,0 +1,176 @@
+// Optional real-microVM test. No AWS credentials, model calls, or host policy
+// changes. Only randomly named test sandboxes are removed by its cleanup.
+import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { gitEnvironment, run, successful } from "../scripts/lib/process.ts";
+import { configuration, unexpectedSecrets } from "../scripts/lib/sandbox.ts";
+
+const env = {
+  ...gitEnvironment(),
+  GIT_AUTHOR_NAME: "Runtime test",
+  GIT_AUTHOR_EMAIL: "test@example.invalid",
+  GIT_COMMITTER_NAME: "Runtime test",
+  GIT_COMMITTER_EMAIL: "test@example.invalid",
+};
+const dir = await mkdtemp(join(tmpdir(), "readonly-runtime-"));
+const { runtime } = await configuration();
+async function call(tool: string, args: string[], cwd?: string, input?: string) {
+  return successful(
+    await run(tool, args, { env, cwd, input, timeout: 600_000 }),
+    `Runtime test ${tool}`,
+  );
+}
+try {
+  const project = join(dir, "repo");
+  await mkdir(project);
+  await call("git", ["init", "--initial-branch=main"], project);
+  await writeFile(join(project, "example.txt"), "initial\n");
+  await call("git", ["add", "."], project);
+  await call("git", ["commit", "-m", "Fixture"], project);
+  const inputBundle = join(dir, "input.bundle");
+  await call("git", ["bundle", "create", inputBundle, "HEAD"], project);
+  for (const agent of ["claude", "codex"]) {
+    const name = `readonly-test-${agent}-${randomBytes(6).toString("hex")}`;
+    // Same host-side guard as launch: stored secrets are injected into every sandbox.
+    const secrets = unexpectedSecrets(JSON.parse(await call("sbx", ["secret", "ls", "--json"])));
+    if (secrets.length) throw new Error(`Remove stored sbx secrets first: ${secrets.join(", ")}`);
+    try {
+      await call("sbx", [
+        "create",
+        "--name",
+        name,
+        "--skills",
+        "off",
+        "--static-mcp=",
+        "--deny-network",
+        "**",
+        "--pull",
+        "never",
+        "--template",
+        runtime.templates[agent].tag,
+        agent,
+      ]);
+      const info = JSON.parse(await call("sbx", ["inspect", name, "--json"]));
+      assert.deepEqual(info.runtime_mounts, []);
+      assert.ok(!info.workspace);
+      // Copy the current bootstrap so edits can be tested before rebuilding.
+      await call("sbx", ["cp", "sandbox/bootstrap.ts", `${name}:/tmp/bootstrap.ts`]);
+      const boot = (command: string) =>
+        call("sbx", ["exec", name, "node", "/tmp/bootstrap.ts", command]);
+      // The same fresh-sandbox checks a real launch runs first.
+      await boot("check");
+      await boot("probe-network");
+      // Empty-workspace mode (no --project), in a separate directory.
+      const empty = "/home/agent/empty-workspace";
+      await call("sbx", ["exec", name, "mkdir", empty]);
+      const emptyBoot = (command: string) =>
+        call("sbx", ["exec", "--workdir", empty, name, "node", "/tmp/bootstrap.ts", command]);
+      const emptyBase = JSON.parse(await emptyBoot("init"));
+      await call("sbx", ["exec", name, "touch", `${empty}/notes.md`]);
+      assert.notEqual(JSON.parse(await emptyBoot("snapshot")).fingerprint, emptyBase.fingerprint);
+      await call("sbx", ["cp", inputBundle, `${name}:/home/agent/readonly-input.bundle`]);
+      const initial = JSON.parse(await boot("clone"));
+      await call("sbx", [
+        "exec",
+        name,
+        "node",
+        "-e",
+        'const fs=require("fs");fs.writeFileSync("example.txt","changed\\n");fs.writeFileSync("new.txt","untracked\\n");',
+      ]);
+      const changed = JSON.parse(await boot("snapshot"));
+      assert.notEqual(changed.fingerprint, initial.fingerprint);
+      // A synthetic aws executable validates the stdin-to-environment transport;
+      // network is still deny-all, and no real AWS session is involved.
+      const fakeDir = join(dir, `fake-${agent}`);
+      await mkdir(fakeDir);
+      const expected = {
+        Account: "222222222222",
+        Arn: "arn:aws:sts::222222222222:assumed-role/ReadOnlyRole/agent-runtime-test",
+        UserId: "AROEXAMPLE:agent-runtime-test",
+      };
+      await writeFile(
+        join(fakeDir, "aws"),
+        '#!/usr/bin/env node\nif(!process.env.AWS_ACCESS_KEY_ID?.startsWith("ASIA_RUNTIME_TEST"))process.exit(2);console.log(' +
+          JSON.stringify(JSON.stringify(expected)) +
+          ");\n",
+      );
+      await call("sbx", ["cp", fakeDir, `${name}:/tmp/fake-aws`]);
+      await call("sbx", ["exec", name, "chmod", "755", "/tmp/fake-aws/aws"]);
+      const inject = (accessKey: string) =>
+        call(
+          "sbx",
+          [
+            "exec",
+            "-i",
+            "--env",
+            "PATH=/tmp/fake-aws:/usr/local/bin:/usr/bin:/bin",
+            name,
+            "node",
+            "/tmp/bootstrap.ts",
+            "inject",
+          ],
+          undefined,
+          JSON.stringify({
+            credentials: {
+              AccessKeyId: accessKey,
+              SecretAccessKey: "EXAMPLE_RUNTIME_SECRET",
+              SessionToken: "EXAMPLE_RUNTIME_TOKEN",
+              Expiration: new Date(Date.now() + 3600_000).toISOString(),
+            },
+            identity: expected,
+            region: "us-west-2",
+          }),
+        );
+      const verify = join(dir, `verify-${agent}.ts`);
+      await writeFile(
+        verify,
+        'import assert from "node:assert/strict";import{statSync}from"node:fs";assert.equal(process.env.AWS_ACCESS_KEY_ID,process.argv[2]);assert.equal(process.env.AWS_PROFILE,undefined);assert.equal(process.env.SSH_AUTH_SOCK,undefined);assert.equal(process.env.GH_TOKEN,undefined);assert.equal(statSync("/home/agent/.readonly-session/aws.sh").mode & 0o777,0o600);console.log("session-ok");',
+      );
+      await call("sbx", ["cp", verify, `${name}:/tmp/verify.ts`]);
+      // Launch, then a resume-style renewal: new shells see the renewed session
+      // and the persistent source line is not duplicated.
+      for (const accessKey of ["ASIA_RUNTIME_TEST", "ASIA_RUNTIME_TEST_RENEWED"]) {
+        await inject(accessKey);
+        assert.equal(
+          await call("sbx", ["exec", name, "bash", "-lc", `node /tmp/verify.ts ${accessKey}`]),
+          "session-ok",
+        );
+      }
+      assert.equal(
+        await call("sbx", [
+          "exec",
+          name,
+          "sudo",
+          "grep",
+          "-cxF",
+          ". '/home/agent/.readonly-session/aws.sh'",
+          "/etc/sandbox-persistent.sh",
+        ]),
+        "1",
+      );
+      const snapshot = JSON.parse(await boot("collect"));
+      assert.equal(snapshot.fingerprint, changed.fingerprint);
+      const output = join(dir, `${agent}.bundle`);
+      await call("sbx", ["cp", `${name}:/tmp/readonly-output.bundle`, output]);
+      await call("git", ["bundle", "verify", output], project);
+      await call("git", ["fetch", output, "refs/readonly-export/snapshot"], project);
+      assert.equal(await call("git", ["show", "FETCH_HEAD:new.txt"], project), "untracked");
+      assert.equal(await call("git", ["show", "FETCH_HEAD:example.txt"], project), "changed");
+      assert.equal(await readFile(join(project, "example.txt"), "utf8"), "initial\n");
+      assert.doesNotMatch(
+        await call("git", ["ls-tree", "-r", "--name-only", "FETCH_HEAD"], project),
+        /readonly-session|aws\.sh/,
+      );
+      console.log(
+        `${agent}: mountless clone, proxy denial, synthetic credential handoff, persistent environment, and work export passed.`,
+      );
+    } finally {
+      await call("sbx", ["rm", "--force", name]);
+    }
+  }
+} finally {
+  await rm(dir, { recursive: true });
+}

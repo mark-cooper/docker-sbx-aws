@@ -1,0 +1,8 @@
+node_modules/
+.readonly-sandbox/
+*.bundle
+*.tar
+*.log
+.env
+.env.*
+!.env.example

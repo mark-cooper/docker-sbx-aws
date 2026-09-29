@@ -1,0 +1,13 @@
+# Synthetic example only. Replace account IDs, role names and login identity.
+[profile browser-login]
+login_session = arn:aws:iam::111111111111:user/example
+region = us-west-2
+
+[profile session-bridge]
+credential_process = aws configure export-credentials --profile browser-login --format process
+region = us-west-2
+
+[profile workload]
+role_arn = arn:aws:iam::222222222222:role/DeveloperRole
+source_profile = session-bridge
+region = us-west-2

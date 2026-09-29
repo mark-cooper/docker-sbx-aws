@@ -1,0 +1,39 @@
+[tools]
+biome = "2.5.10"
+node = "24.16.0"
+
+[tasks.sandbox]
+description = "Launch an agent with a temporary restricted AWS role"
+run = "node scripts/sandbox.ts launch"
+
+[tasks."sandbox:preview"]
+description = "Resolve profile metadata without contacting AWS or Docker"
+run = "node scripts/sandbox.ts preview"
+
+[tasks."sandbox:doctor"]
+description = "Check runtime, profile, network policy, and direct role assumption"
+run = "node scripts/sandbox.ts doctor"
+
+[tasks."sandbox:template"]
+description = "Build and load a pinned agent template"
+run = "node scripts/sandbox.ts template"
+
+[tasks."sandbox:resume"]
+description = "Reattach to a managed sandbox, renewing its AWS session if near expiry"
+run = "node scripts/sandbox.ts resume"
+
+[tasks."sandbox:collect"]
+description = "Export sandbox work as a Git bundle"
+run = "node scripts/sandbox.ts collect"
+
+[tasks."sandbox:destroy"]
+description = "Remove a managed sandbox after checking for uncollected work"
+run = "node scripts/sandbox.ts destroy"
+
+[tasks.check]
+description = "Typecheck and run tests"
+run = "npm run check"
+
+[tasks.lint-fix]
+description = "Apply biome fixes"
+run = ['biome check --write']
