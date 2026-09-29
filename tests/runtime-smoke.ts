@@ -56,11 +56,35 @@ try {
       const info = JSON.parse(await call("sbx", ["inspect", name, "--json"]));
       assert.deepEqual(info.runtime_mounts, []);
       assert.ok(!info.workspace);
+      // The daemon, not just the CLI, must be the reviewed version: some sbx
+      // changes apply only after a daemon restart.
+      assert.equal(info.daemon_version, `v${runtime.sbxVersion}`);
+      assert.deepEqual(info.kits, []);
       // Copy the current bootstrap so edits can be tested before rebuilding.
       await call("sbx", ["cp", "sandbox/bootstrap.ts", `${name}:/tmp/bootstrap.ts`]);
       const boot = (command: string) =>
         call("sbx", ["exec", name, "node", "/tmp/bootstrap.ts", command]);
-      // The same fresh-sandbox checks a real launch runs first.
+      // The same fresh-sandbox checks a real launch runs first. sbx's GH_TOKEN
+      // proxy placeholder is present and tolerated.
+      assert.equal(
+        await call("sbx", ["exec", name, "bash", "-c", '[ -n "$GH_TOKEN" ] && echo set']),
+        "set",
+      );
+      await boot("check");
+      // Skills a kit could install despite --skills off stop the launch.
+      const skill = "/home/agent/.claude/skills/planted/SKILL.md";
+      await call("sbx", [
+        "exec",
+        name,
+        "bash",
+        "-c",
+        `mkdir -p "$(dirname ${skill})" && touch ${skill}`,
+      ]);
+      const planted = await run("sbx", ["exec", name, "node", "/tmp/bootstrap.ts", "check"], {
+        env,
+      });
+      assert.notEqual(planted.code, 0);
+      await call("sbx", ["exec", name, "rm", "-r", "/home/agent/.claude/skills/planted"]);
       await boot("check");
       await boot("probe-network");
       // Empty-workspace mode (no --project), in a separate directory.

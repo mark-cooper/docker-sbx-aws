@@ -7,6 +7,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
@@ -15,11 +16,16 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const sessionDir = join(homedir(), ".readonly-session");
-// The reviewed sbx version (config/runtime.json) sets this fixed placeholder
-// GH_TOKEN in every sandbox. It is not a host credential; the host check
-// rejects any stored github secret the sbx proxy could substitute for it. Any
-// other value is still refused. Recheck it when bumping sbx.
-const sbxGitHubPlaceholder = "4f4a70aae7238131b9775a37bb8e16b268905073c33bdcfef7553398ba869c52";
+// sbx sets GH_TOKEN in every sandbox to a proxy placeholder shaped like a real
+// token. sbx never places service credentials in the sandbox; its proxy swaps
+// them in on the wire only for stored secrets. The host rejects a stored
+// github secret and the allowlist admits no GitHub host, so the value is inert
+// whatever it is. It is tolerated here, not matched against a version-specific
+// constant, and unset for the agent's session.
+const sbxProxyPlaceholders = ["GH_TOKEN"];
+// Shared skills are disabled at creation, but since sbx 0.46.0 kits may still
+// write into these directories. The template installs none.
+const skillDirs = [".claude/skills", ".codex/skills", ".agents/skills"];
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 // Launcher-made commits use a fixed identity and ignore user/system Git config.
 const exportGit = {
@@ -119,10 +125,12 @@ try {
       "GH_TOKEN",
       "GITHUB_TOKEN",
     ]) {
-      const value = process.env[key];
-      if (value && !(key === "GH_TOKEN" && sha256(value) === sbxGitHubPlaceholder))
+      if (process.env[key] && !sbxProxyPlaceholders.includes(key))
         throw new Error("Unexpected inherited credential/provider environment.");
     }
+    for (const dir of skillDirs.map((path) => join(homedir(), path)))
+      if (existsSync(dir) && readdirSync(dir).length)
+        throw new Error(`Unexpected agent skills in fresh sandbox (${dir}).`);
     console.log(JSON.stringify({ cwd: process.cwd(), home: homedir() }));
   } else if (command === "clone") {
     execute("git", ["init", "--initial-branch=sandbox", "."]);
