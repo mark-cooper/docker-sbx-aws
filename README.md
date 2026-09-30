@@ -4,8 +4,8 @@ Launch Claude Code or Codex in a local Docker Sandbox with a temporary session f
 
 ```sh
 aws login --profile browser-login
-mise run sandbox claude workload # where workload is an aws profile; starts with an empty workspace
-mise run sandbox claude workload --project /path/to/repository # clones a Git repository into the sandbox
+mise run sandbox claude profile
+mise run sandbox claude profile --project /path/to/repository # clones a Git repository into the sandbox
 ```
 
 All profile names and account IDs in this repository are fictional examples. Any profile satisfying the requirements below can be used. This is an initial implementation, not an IAM policy verifier: an end-to-end launch requires your own restricted role, model authentication, and compatible sbx policy.
@@ -53,11 +53,11 @@ Templates build from immutable image digests in `config/runtime.json` and `sandb
 For this example, the source is `session-bridge` and the replacement role is `arn:aws:iam::222222222222:role/ReadOnlyRole`. No additional read-only profile is needed.
 
 ```sh
-mise run sandbox:preview claude workload
-mise run sandbox:doctor workload
-mise run sandbox claude workload
-mise run sandbox claude workload --project /path/to/repository
-mise run sandbox codex workload --role agents/RestrictedReadOnlyRole --project /path/to/repository
+mise run sandbox:preview claude profile
+mise run sandbox:doctor profile
+mise run sandbox claude profile
+mise run sandbox claude profile --project /path/to/repository
+mise run sandbox codex profile --role agents/RestrictedReadOnlyRole --project /path/to/repository
 ```
 
 `--source-profile other-source` overrides the immediate source. AWS CLI resolves that source normally. Expired-login diagnostics identify upstream login profiles for direct login and recognized export-credentials bridges; opaque credential processes get a generic renewal hint. `doctor --agent codex` selects the Codex network allowlist; Claude is the default.
