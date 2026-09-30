@@ -8,7 +8,7 @@ mise run sandbox claude profile
 mise run sandbox claude profile --project /path/to/repository # clones a Git repository into the sandbox
 ```
 
-All profile names and account IDs in this repository are fictional examples. Any profile satisfying the requirements below can be used. This is an initial implementation, not an IAM policy verifier: an end-to-end launch requires your own restricted role, model authentication, and compatible sbx policy.
+All profile names and account IDs in this repository are fictional examples. Any profile satisfying the requirements below can be used.
 
 ## How it works
 
@@ -31,8 +31,7 @@ Only the resulting access key, secret, session token, expiry, and region enter t
 - A source using a login session, a trusted `credential_process`, or an intermediate role using `source_profile`. Intermediate roles are preserved. Static credentials in this chain are rejected. Arbitrary credential processes are trusted host code; preview never executes them.
 - An existing restricted role, default `ReadOnlyRole`, or a name/path passed with `--role`. Its effective permissions must allow intended reads and deny writes, role escalation, and unwanted data reads such as S3 object downloads. AWS's generic read-only managed policy may allow more data access than you intend.
 - Direct access from the source identity to the restricted role: target trust and, for cross-account access, source permission to assume it. Access to the original account role does not imply this permission.
-
-Supported ARN partitions are `aws`, `aws-us-gov`, and `aws-cn`. This version does not infer target accounts without `role_arn`, configure replacement-role MFA/external-ID/source-identity arguments, or refresh sandbox credentials. Roles requiring additional STS parameters fail until support is added. Sessions request one hour; role chaining cannot exceed one hour. Relaunch after expiry.
+- This version does not infer target accounts without `role_arn`, configure replacement-role MFA/external-ID/source-identity arguments, or refresh sandbox credentials. Roles requiring additional STS parameters fail until support is added. Sessions request one hour; role chaining cannot exceed one hour. Relaunch after expiry.
 
 ## Setup
 
