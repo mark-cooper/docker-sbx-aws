@@ -2,11 +2,9 @@
   "minSbxVersion": "0.46.0",
   "templates": {
     "claude": {
-      "base": "docker/sandbox-templates:claude-code@sha256:868e3f5ef10579e06903d42e86448851ed59319ab8b9fba6dea2772c449bb2a6",
       "tag": "readonly-agent-claude:0.1.0"
     },
     "codex": {
-      "base": "docker/sandbox-templates:codex@sha256:a68b972a59148c6359ade441387159033f6d196d48aef9dda06d2d4bb26eb41e",
       "tag": "readonly-agent-codex:0.1.0"
     }
   }

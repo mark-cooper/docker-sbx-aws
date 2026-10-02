@@ -16,7 +16,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const bootstrap = "/opt/readonly-sandbox/bootstrap.ts";
 export interface Runtime {
   minSbxVersion: string;
-  templates: Record<string, { base: string; tag: string }>;
+  templates: Record<string, { tag: string }>;
 }
 export interface LaunchOptions {
   agent: string;
@@ -428,22 +428,18 @@ export async function buildTemplate(agent: string, run: Runner = execute): Promi
   if (!template) throw new Error("Template agent must be claude or codex.");
   console.log(`Building ${template.tag}; pinned image downloads can take several minutes.`);
   await withTemp(async (dir) => {
-    await tool(
-      run,
-      "docker",
-      [
-        "build",
-        "--build-arg",
-        `BASE_IMAGE=${template.base}`,
-        "--tag",
-        template.tag,
-        "--file",
-        join(root, "sandbox", "Dockerfile"),
-        root,
-      ],
-      "Template build",
-      { interactive: true, timeout: 1_800_000 },
-    );
+    // Agent Dockerfiles copy from this local tag, so it must be built first.
+    for (const [tag, file, operation] of [
+      ["readonly-agent-base", "Dockerfile", "Base image build"],
+      [template.tag, `Dockerfile.${agent}`, "Template build"],
+    ])
+      await tool(
+        run,
+        "docker",
+        ["build", "--tag", tag, "--file", join(root, "sandbox", file), root],
+        operation,
+        { interactive: true, timeout: 1_800_000 },
+      );
     const archive = join(dir, "template.tar");
     await tool(
       run,

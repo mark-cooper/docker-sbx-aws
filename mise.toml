@@ -1,6 +1,6 @@
 [tools]
 biome = "2.5.10"
-node = "24.16.0"
+node = "24"
 
 [tasks.sandbox]
 description = "Launch an agent with a temporary restricted AWS role"

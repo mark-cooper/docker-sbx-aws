@@ -1,0 +1,6 @@
+# syntax=docker/dockerfile:1
+FROM docker/sandbox-templates:claude-code@sha256:868e3f5ef10579e06903d42e86448851ed59319ab8b9fba6dea2772c449bb2a6
+COPY --from=readonly-agent-base / /
+RUN node --version && aws --version && git --version && jq --version && mise --version
+USER agent
+WORKDIR /home/agent/workspace

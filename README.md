@@ -1,12 +1,14 @@
 # Read-only AWS agent sandboxes
 
-Launch Claude Code or Codex in a local Docker Sandbox with a temporary session for an existing restricted AWS role. Keep your normal host AWS profiles and browser-login flow.
+Launch a coding agent in a local Docker Sandbox with a temporary session for an existing restricted AWS role. Keep your normal host AWS profiles and browser-login flow.
 
 ```sh
 aws login --profile browser-login
-mise run sandbox claude profile
-mise run sandbox claude profile --project /path/to/project # mounts the local directory for host edits
+mise run sandbox <agent> profile
+mise run sandbox <agent> profile --project /path/to/project # mounts the local directory for host edits
 ```
+
+`<agent>` is any agent with a template in [config/runtime.json](config/runtime.json).
 
 All profile names and account IDs in this repository are fictional examples. Any profile satisfying the requirements below can be used.
 
@@ -40,10 +42,18 @@ Install the prerequisites and configure Docker Sandboxes/model authentication th
 ```sh
 mise install
 npm ci --ignore-scripts  # development/typechecking only
-mise run sandbox:templates  # or one agent: mise run sandbox:template claude
+mise run sandbox:templates  # or one agent: mise run sandbox:template <agent>
 ```
 
-Templates build from immutable image digests in `config/runtime.json` and `sandbox/Dockerfile`, then load into the separate sandbox image store. Downloads and loading can take several minutes. AWS CLI, Node, Git, jq, and mise are checked during preparation. Template builds use no AWS credentials.
+Each template is two layers, both pinned to immutable image digests. [sandbox/Dockerfile](sandbox/Dockerfile) builds a shared base with Node, AWS CLI, mise, and the sandbox bootstrap. Each `sandbox/Dockerfile.<agent>` starts from Docker's upstream template for that agent and copies the shared base on top. The result loads into the separate sandbox image store. Downloads and loading can take several minutes. AWS CLI, Node, Git, jq, and mise are checked during preparation. Template builds use no AWS credentials.
+
+Dependabot watches the Dockerfiles in `sandbox/` and opens a PR when a newer upstream image is available, updating the tag and digest together. CI builds the base and every agent Dockerfile on each pull request, so a Dependabot PR is mergeable only when the images still build. After merging an upgrade, run `mise run sandbox:templates` and `npm run test:runtime` to load and test the new templates in real sandboxes. Running sessions are not affected.
+
+### Adding an agent
+
+1. Add `sandbox/Dockerfile.<agent>` starting `FROM` Docker's sandbox template for that agent, pinned by digest, followed by the same lines as the existing agent Dockerfiles.
+2. Add its template tag to [config/runtime.json](config/runtime.json) and its model/auth hosts to [config/network-policy.json](config/network-policy.json).
+3. Add the agent name to `agents` in [scripts/lib/state.ts](scripts/lib/state.ts), add its model secret name, if any, to `modelSecrets` in [scripts/lib/sandbox.ts](scripts/lib/sandbox.ts), and add it to the `sandbox:templates` task in [mise.toml](mise.toml).
 
 ### AWS profiles
 
@@ -52,18 +62,18 @@ Templates build from immutable image digests in `config/runtime.json` and `sandb
 For this example, the source is `session-bridge` and the replacement role is `arn:aws:iam::222222222222:role/ReadOnlyRole`. No additional read-only profile is needed.
 
 ```sh
-mise run sandbox:preview claude profile
-mise run sandbox:doctor profile
-mise run sandbox claude profile
-mise run sandbox claude profile --project /path/to/repository
-mise run sandbox codex profile --role agents/RestrictedReadOnlyRole --project /path/to/repository
+mise run sandbox:preview <agent> profile
+mise run sandbox:doctor profile --agent <agent>
+mise run sandbox <agent> profile
+mise run sandbox <agent> profile --project /path/to/repository
+mise run sandbox <agent> profile --role agents/RestrictedReadOnlyRole --project /path/to/repository
 ```
 
-`--source-profile other-source` overrides the immediate source. AWS CLI resolves that source normally. Expired-login diagnostics identify upstream login profiles for direct login and recognized export-credentials bridges; opaque credential processes get a generic renewal hint. `doctor --agent codex` selects the Codex network allowlist; Claude is the default.
+`--source-profile other-source` overrides the immediate source. AWS CLI resolves that source normally. Expired-login diagnostics identify upstream login profiles for direct login and recognized export-credentials bridges; opaque credential processes get a generic renewal hint. `doctor --agent <agent>` checks that agent's network allowlist.
 
 ### Sandbox network policy
 
-Use a **dedicated sbx setup with default-deny network policy**, no registered MCP servers, no stored sbx secrets other than model secrets (`anthropic`, `openai`; check with `sbx secret ls`), and SSH agent forwarding disabled. sbx injects stored service secrets such as `github` into every sandbox, so remove them from the dedicated setup (for example, `sbx secret rm github`). The launcher checks settings without changing global configuration. A fresh dedicated installation can be configured with:
+Use a **dedicated sbx setup with default-deny network policy**, no registered MCP servers, no stored sbx secrets other than the agents' model secrets (`modelSecrets` in [scripts/lib/sandbox.ts](scripts/lib/sandbox.ts); check with `sbx secret ls`), and SSH agent forwarding disabled. sbx injects stored service secrets such as `github` into every sandbox, so remove them from the dedicated setup (for example, `sbx secret rm github`). The launcher checks settings without changing global configuration. A fresh dedicated installation can be configured with:
 
 ```sh
 sbx policy init deny-all
@@ -94,8 +104,8 @@ Resume applies the current list to an existing sandbox before checking it, so al
 Each launch prints its unique name and credential expiry. The sandbox is retained after the agent exits:
 
 ```sh
-mise run sandbox:resume ro-claude-012345abcdef
-mise run sandbox:destroy ro-claude-012345abcdef
+mise run sandbox:resume <name>
+mise run sandbox:destroy <name>
 ```
 
 Resume reattaches to a ready session. It first repeats the host checks (sbx version and settings, stored secrets, global and sandbox network policy). If less than 15 minutes of the one-hour AWS session remain, it assumes the restricted role again on the host and hands the new session to the sandbox the same way launch does; new shells then use it. This needs a valid upstream `aws login`. Renewal happens only on resume, not while an agent is running. Prefer these tasks over raw `sbx run`, which skips the checks and never renews credentials.
