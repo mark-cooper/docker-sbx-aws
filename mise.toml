@@ -2,38 +2,30 @@
 biome = "2.5.10"
 node = "24"
 
-[tasks.sandbox]
-description = "Launch an agent with a temporary restricted AWS role"
-run = "node scripts/sandbox.ts launch"
+[tasks.build]
+description = "Build and load one agent template"
+run = "node scripts/sandbox.ts build"
 
-[tasks."sandbox:preview"]
-description = "Resolve profile metadata without contacting AWS or Docker"
-run = "node scripts/sandbox.ts preview"
-
-[tasks."sandbox:doctor"]
-description = "Check runtime, profile, network policy, and direct role assumption"
-run = "node scripts/sandbox.ts doctor"
-
-[tasks."sandbox:template"]
-description = "Build and load a pinned agent template"
-run = "node scripts/sandbox.ts template"
-
-[tasks."sandbox:templates"]
+[tasks.build_all]
 description = "Build and load every agent template"
-run = [{ task = "sandbox:template claude" }, { task = "sandbox:template codex" }]
-
-[tasks."sandbox:resume"]
-description = "Reattach to a managed sandbox, renewing its AWS session if near expiry"
-run = "node scripts/sandbox.ts resume"
-
-[tasks."sandbox:destroy"]
-description = "Remove a managed sandbox"
-run = "node scripts/sandbox.ts destroy"
+run = "node scripts/sandbox.ts build --all"
 
 [tasks.check]
 description = "Typecheck and run tests"
 run = "npm run check"
 
+[tasks.doctor]
+description = "Check runtime, profile, network policy, and direct role assumption"
+run = "node scripts/sandbox.ts doctor"
+
 [tasks.lint-fix]
 description = "Apply biome fixes"
 run = ['biome check --write']
+
+[tasks.preview]
+description = "Resolve profile metadata without contacting AWS or Docker"
+run = "node scripts/sandbox.ts preview"
+
+[tasks.sbx]
+description = "sbx, with a restricted AWS session for run/rm of managed sandboxes; other commands pass through"
+run = "node scripts/sandbox.ts sbx"

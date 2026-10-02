@@ -4,11 +4,16 @@ Launch a coding agent in a local Docker Sandbox with a temporary session for an 
 
 ```sh
 aws login --profile browser-login
-mise run sandbox <agent> profile
-mise run sandbox <agent> profile --project /path/to/project # mounts the local directory for host edits
+mise run sbx run <agent> --profile profile
+mise run sbx run <agent> /path/to/project --profile profile # mounts the local directory for host edits
+
+# reattaching
+mise run sbx run --name <name>
 ```
 
 `<agent>` is any agent with a template in [config/runtime.json](config/runtime.json).
+
+`mise run sbx` mirrors the [sbx CLI](https://docs.docker.com/ai/sandboxes/usage/): the same command works with or without mise. Through mise, `run` and `rm` also handle the AWS session for sandboxes this launcher manages, and any other command, such as `mise run sbx ls`, goes to sbx unchanged. Commands with no sbx equivalent are the other mise tasks (`preview`, `doctor`, `build`, `build_all`). Run `node scripts/sandbox.ts --help` for the full list.
 
 All profile names and account IDs in this repository are fictional examples. Any profile satisfying the requirements below can be used.
 
@@ -42,18 +47,18 @@ Install the prerequisites and configure Docker Sandboxes/model authentication th
 ```sh
 mise install
 npm ci --ignore-scripts  # development/typechecking only
-mise run sandbox:templates  # or one agent: mise run sandbox:template <agent>
+mise run build_all  # or one agent: mise run build <agent>
 ```
 
 Each template is two layers, both pinned to immutable image digests. [sandbox/Dockerfile](sandbox/Dockerfile) builds a shared base with Node, AWS CLI, mise, and the sandbox bootstrap. Each `sandbox/Dockerfile.<agent>` starts from Docker's upstream template for that agent and copies the shared base on top. The result loads into the separate sandbox image store. Downloads and loading can take several minutes. AWS CLI, Node, Git, jq, and mise are checked during preparation. Template builds use no AWS credentials.
 
-Dependabot watches the Dockerfiles in `sandbox/` and opens a PR when a newer upstream image is available, updating the tag and digest together. CI builds the base and every agent Dockerfile on each pull request, so a Dependabot PR is mergeable only when the images still build. After merging an upgrade, run `mise run sandbox:templates` and `npm run test:runtime` to load and test the new templates in real sandboxes. Running sessions are not affected.
+Dependabot watches the Dockerfiles in `sandbox/` and opens a PR when a newer upstream image is available, updating the tag and digest together. CI builds the base and every agent Dockerfile on each pull request, so a Dependabot PR is mergeable only when the images still build. After merging an upgrade, run `mise run build_all` and `npm run test:runtime` to load and test the new templates in real sandboxes. Running sessions are not affected.
 
 ### Adding an agent
 
 1. Add `sandbox/Dockerfile.<agent>` starting `FROM` Docker's sandbox template for that agent, pinned by digest, followed by the same lines as the existing agent Dockerfiles.
 2. Add its template tag to [config/runtime.json](config/runtime.json) and its model/auth hosts to [config/network-policy.json](config/network-policy.json).
-3. Add the agent name to `agents` in [scripts/lib/state.ts](scripts/lib/state.ts), add its model secret name, if any, to `modelSecrets` in [scripts/lib/sandbox.ts](scripts/lib/sandbox.ts), and add it to the `sandbox:templates` task in [mise.toml](mise.toml).
+3. Add the agent name to `agents` in [scripts/lib/state.ts](scripts/lib/state.ts) and add its model secret name, if any, to `modelSecrets` in [scripts/lib/sandbox.ts](scripts/lib/sandbox.ts).
 
 ### AWS profiles
 
@@ -62,11 +67,11 @@ Dependabot watches the Dockerfiles in `sandbox/` and opens a PR when a newer ups
 For this example, the source is `session-bridge` and the replacement role is `arn:aws:iam::222222222222:role/ReadOnlyRole`. No additional read-only profile is needed.
 
 ```sh
-mise run sandbox:preview <agent> profile
-mise run sandbox:doctor profile --agent <agent>
-mise run sandbox <agent> profile
-mise run sandbox <agent> profile --project /path/to/repository
-mise run sandbox <agent> profile --role agents/RestrictedReadOnlyRole --project /path/to/repository
+mise run preview <agent> --profile profile
+mise run doctor --profile profile --agent <agent>
+mise run sbx run <agent> --profile profile
+mise run sbx run <agent> /path/to/repository --profile profile
+mise run sbx run <agent> /path/to/repository --profile profile --role agents/RestrictedReadOnlyRole
 ```
 
 `--source-profile other-source` overrides the immediate source. AWS CLI resolves that source normally. Expired-login diagnostics identify upstream login profiles for direct login and recognized export-credentials bridges; opaque credential processes get a generic renewal hint. `doctor --agent <agent>` checks that agent's network allowlist.
@@ -97,18 +102,18 @@ Resume applies the current list to an existing sandbox before checking it, so al
 
 ## Workspace and lifecycle
 
-**Empty mode is the default.** Without `--project`, the agent starts in an empty workspace and no host files are transferred. This suits AWS investigation that needs no source code. Files created there remain available while the sandbox exists, including after resume, but are lost when it is destroyed. The launcher warns about this at launch. The current directory is never used implicitly: mise tasks run from this launcher's root, not your shell's directory, so pass `--project` as an absolute path.
+**Empty mode is the default.** Without a path, the agent starts in an empty workspace and no host files are transferred. This suits AWS investigation that needs no source code. Files created there remain available while the sandbox exists, including after resume, but are lost when it is destroyed. The launcher warns about this at launch. The current directory is never used implicitly. A relative path is resolved from the directory you ran mise in.
 
-**Project mode** is selected by `--project` and mounts that local directory for host edits. The agent can read and change files there immediately, including uncommitted and ignored files. Do not choose a directory containing credentials or private keys. Host home and its ancestors are rejected as project roots.
+**Project mode** is selected by passing a path after the agent and mounts that local directory for host edits. The agent can read and change files there immediately, including uncommitted and ignored files. Do not choose a directory containing credentials or private keys. Host home and its ancestors are rejected as project roots.
 
 Each launch prints its unique name and credential expiry. The sandbox is retained after the agent exits:
 
 ```sh
-mise run sandbox:resume <name>
-mise run sandbox:destroy <name>
+mise run sbx run --name <name>  # reattach
+mise run sbx rm <name>
 ```
 
-Resume reattaches to a ready session. It first repeats the host checks (sbx version and settings, stored secrets, global and sandbox network policy). If less than 15 minutes of the one-hour AWS session remain, it assumes the restricted role again on the host and hands the new session to the sandbox the same way launch does; new shells then use it. This needs a valid upstream `aws login`. Renewal happens only on resume, not while an agent is running. Prefer these tasks over raw `sbx run`, which skips the checks and never renews credentials.
+Resume reattaches to a ready session. It first repeats the host checks (sbx version and settings, stored secrets, global and sandbox network policy). If less than 15 minutes of the one-hour AWS session remain, it assumes the restricted role again on the host and hands the new session to the sandbox the same way launch does; new shells then use it. This needs a valid upstream `aws login`. Renewal happens only on resume, not while an agent is running. Reattach with `mise run sbx run --name <name>` from anywhere; `--name` is recognized regardless of where it appears, so `mise run sbx run <agent> --name <name>` also reattaches, with `<agent>` only confirming it matches the sandbox (a mismatch is rejected). The same command without mise skips the checks and never renews credentials. A `--name` not recognized as one of this launcher's sandboxes is passed straight through to `sbx`, unchecked.
 
 Destroy stops the active agent session and removes the sandbox. Mounted project files remain on the host. Files created only in an empty sandbox are lost. Failed launches are stopped and retained for inspection. Only recorded launcher sessions can be destroyed through these tasks.
 

@@ -242,7 +242,7 @@ test("a launch that fails during creation can still be destroyed", async () =>
     assert.equal((await loadState(name)).phase, "destroyed");
     assert.ok(!calls.some((c) => c.args[0] === "rm"));
   }));
-test("without --project the workspace starts empty and never touches the current directory", async () =>
+test("without a project path the workspace starts empty and never touches the current directory", async () =>
   fixture(async ({ run, calls }) => {
     const name = await launch(target, { agent: "claude" }, run);
     assert.ok(!calls.some((c) => c.tool === "git" && c.args[0] === "rev-parse"));
@@ -290,6 +290,12 @@ test("resume repeats host checks, renews only near expiry, and refuses failed la
     control.secrets = [];
     await saveState({ ...state, phase: "failed" });
     await assert.rejects(resume(name, run), /Only ready sessions/);
+  }));
+test("resume checks an explicitly confirmed agent against the sandbox's own", async () =>
+  fixture(async ({ run }) => {
+    const name = await launch(target, { agent: "claude" }, run);
+    await resume(name, run, "claude");
+    await assert.rejects(resume(name, run, "codex"), /is a claude sandbox, not codex/);
   }));
 test("only model secrets are tolerated", () => {
   const service = (name: string) => ({ scope: "global", type: "service", name });

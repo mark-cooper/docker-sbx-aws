@@ -256,8 +256,8 @@ export async function launch(
   const allowed = destinations(network, options.agent, target);
   await prerequisites(run, runtime);
   auditPolicy(await listPolicy(run), allowed); // Fail before creating resources or minting credentials.
-  // Without --project the sandbox starts from an empty workspace. The current
-  // directory is never a default: mise tasks always run from the launcher root.
+  // Without a project path the sandbox starts from an empty workspace; the
+  // current directory is never used implicitly.
   const project =
     options.project === undefined ? undefined : await realpath(resolve(options.project));
   if (project) {
@@ -326,7 +326,7 @@ export async function launch(
     state.phase = "ready";
     await saveState(state);
     console.log(
-      `Ready: ${name}\nExpires: ${state.expiresAt}\nResume: mise run sandbox:resume ${name}`,
+      `Ready: ${name}\nExpires: ${state.expiresAt}\nReattach: mise run sbx run --name ${name}`,
     );
     await attach(run, name);
     return name;
@@ -337,7 +337,7 @@ export async function launch(
     // Stop only this newly created sandbox; recovery uses managed lifecycle tasks.
     await run("sbx", ["stop", name], { env: hostEnvironment() }).catch(() => {});
     throw new Error(
-      `${error instanceof Error ? error.message : "Launch failed."}\nSession retained: ${name}. Use sandbox:destroy when no work needs recovery.`,
+      `${error instanceof Error ? error.message : "Launch failed."}\nSession retained: ${name}. Use mise run sbx rm ${name} when no work needs recovery.`,
     );
   }
 }
@@ -373,11 +373,17 @@ async function attach(run: Runner, name: string): Promise<void> {
 // Sessions this close to expiry are renewed before reattaching.
 const renewalWindow = 15 * 60_000;
 
-export async function resume(name: string, run: Runner = execute): Promise<void> {
+export async function resume(
+  name: string,
+  run: Runner = execute,
+  expectedAgent?: string,
+): Promise<void> {
   const state = await loadState(name);
+  if (expectedAgent && expectedAgent !== state.agent)
+    throw new Error(`${name} is a ${state.agent} sandbox, not ${expectedAgent}.`);
   if (state.phase !== "ready")
     throw new Error(
-      `Only ready sessions can be resumed (this one is ${state.phase}). Use sandbox:destroy for failed launches.`,
+      `Only ready sessions can be resumed (this one is ${state.phase}). Use mise run sbx rm for failed launches.`,
     );
   // Host policy, secrets and settings may have changed since launch; repeat
   // every host-side check that guards a credential handoff.
@@ -425,7 +431,7 @@ export async function destroy(name: string, run: Runner = execute): Promise<void
 export async function buildTemplate(agent: string, run: Runner = execute): Promise<void> {
   const { runtime } = await configuration();
   const template = runtime.templates[agent];
-  if (!template) throw new Error("Template agent must be claude or codex.");
+  if (!template) throw new Error("No template is configured for that agent.");
   console.log(`Building ${template.tag}; pinned image downloads can take several minutes.`);
   await withTemp(async (dir) => {
     // Agent Dockerfiles copy from this local tag, so it must be built first.
