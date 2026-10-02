@@ -1,6 +1,19 @@
 # syntax=docker/dockerfile:1
-FROM docker/sandbox-templates:claude-code@sha256:868e3f5ef10579e06903d42e86448851ed59319ab8b9fba6dea2772c449bb2a6
-COPY --from=readonly-agent-base / /
+FROM docker/sandbox-templates:claude-code@sha256:868e3f5ef10579e06903d42e86448851ed59319ab8b9fba6dea2772c449bb2a6 AS base
+FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS node
+FROM amazon/aws-cli:2.37.8@sha256:420ab345e847291b541b45d989535f55bcff957c27fa1100fae4aa233e86398c AS aws
+FROM jdxcode/mise:debian@sha256:8544c3c5648d98e93b22389ed8d208ec9470a2c92b027de85bb2dc4ed4545cb8 AS mise
+
+FROM base
+USER root
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
+COPY --from=aws /usr/local/aws-cli /usr/local/aws-cli
+COPY sandbox/bootstrap.ts /opt/readonly-sandbox/bootstrap.ts
+RUN ln -sf /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends libatomic1 \
+ && rm -rf /var/lib/apt/lists/*
 RUN node --version && aws --version && git --version && jq --version && mise --version
 USER agent
 WORKDIR /home/agent/workspace

@@ -50,13 +50,13 @@ npm ci --ignore-scripts  # development/typechecking only
 mise run build_all  # or one agent: mise run build <agent>
 ```
 
-Each template is two layers pinned to immutable image digests: [sandbox/Dockerfile](sandbox/Dockerfile) builds a shared base (Node, AWS CLI, mise, sandbox bootstrap), and each `sandbox/Dockerfile.<agent>` starts from Docker's upstream template for that agent and layers the base on top. Builds load into the separate sandbox image store and can take several minutes; they use no AWS credentials.
+Each `sandbox/Dockerfile.<agent>` is a self-contained, independently buildable multi-stage build: it starts from Docker's upstream template for that agent, pinned by digest, then layers in Node, AWS CLI, and mise from their own pinned upstream images. Every agent Dockerfile shares an identical body — only the first `FROM ... AS base` line differs — and a test (`tests/dockerfiles.test.ts`) fails CI if they ever drift apart. Builds load into the separate sandbox image store and can take several minutes; they use no AWS credentials.
 
 Dependabot opens a PR when a newer upstream image is available, updating tag and digest together; CI builds every Dockerfile on each PR. After merging an upgrade, run `mise run build_all` and `npm run test:runtime` to load and test the new templates — running sessions are unaffected.
 
 ### Adding an agent
 
-1. Add `sandbox/Dockerfile.<agent>` starting `FROM` Docker's sandbox template for that agent, pinned by digest, followed by the same lines as the existing agent Dockerfiles.
+1. Add `sandbox/Dockerfile.<agent>` starting `FROM` Docker's sandbox template for that agent, pinned by digest, followed by the same lines as the existing agent Dockerfiles (`tests/dockerfiles.test.ts` will fail if it diverges).
 2. Add its template tag to [config/runtime.json](config/runtime.json) and its model/auth hosts to [config/network-policy.json](config/network-policy.json).
 3. Add the agent name to `agents` in [scripts/lib/state.ts](scripts/lib/state.ts) and its model secret name, if any, to `modelSecrets` in [scripts/lib/sandbox.ts](scripts/lib/sandbox.ts).
 

@@ -434,18 +434,13 @@ export async function buildTemplate(agent: string, run: Runner = execute): Promi
   if (!template) throw new Error("No template is configured for that agent.");
   console.log(`Building ${template.tag}; pinned image downloads can take several minutes.`);
   await withTemp(async (dir) => {
-    // Agent Dockerfiles copy from this local tag, so it must be built first.
-    for (const [tag, file, operation] of [
-      ["readonly-agent-base", "Dockerfile", "Base image build"],
-      [template.tag, `Dockerfile.${agent}`, "Template build"],
-    ])
-      await tool(
-        run,
-        "docker",
-        ["build", "--tag", tag, "--file", join(root, "sandbox", file), root],
-        operation,
-        { interactive: true, timeout: 1_800_000 },
-      );
+    await tool(
+      run,
+      "docker",
+      ["build", "--tag", template.tag, "--file", join(root, "sandbox", `Dockerfile.${agent}`), root],
+      "Template build",
+      { interactive: true, timeout: 1_800_000 },
+    );
     const archive = join(dir, "template.tar");
     await tool(
       run,

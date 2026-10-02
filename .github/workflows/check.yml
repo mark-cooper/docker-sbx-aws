@@ -21,5 +21,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build --tag readonly-agent-base --file sandbox/Dockerfile .
       - run: for file in sandbox/Dockerfile.*; do docker build --file "$file" .; done
