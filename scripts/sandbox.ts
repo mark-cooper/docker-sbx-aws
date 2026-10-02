@@ -105,7 +105,10 @@ async function sbx(args: string[]): Promise<void> {
       const consumed = flag === "--name" ? 2 : 1;
       const positionals = [...rest.slice(0, nameIndex), ...rest.slice(nameIndex + consumed)];
       if (managed(name)) {
-        if (positionals.length > 1 || (positionals.length === 1 && !agents.includes(positionals[0])))
+        if (
+          positionals.length > 1 ||
+          (positionals.length === 1 && !agents.includes(positionals[0]))
+        )
           throw new Error(
             `Reattach takes only --name <sandbox>, with an optional agent to confirm it.\n${help}`,
           );

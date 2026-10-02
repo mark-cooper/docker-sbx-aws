@@ -81,7 +81,7 @@ mise run sbx run <agent> /path/to/repository --profile profile --role agents/Res
 
 ### Sandbox network policy
 
-Use a **dedicated sbx setup** with default-deny network policy, no registered MCP servers, no stored secrets other than the agents' model secrets (`modelSecrets` in [scripts/lib/sandbox.ts](scripts/lib/sandbox.ts); check with `sbx secret ls`), and SSH agent forwarding disabled. sbx injects stored service secrets like `github` into every sandbox, so remove them from this dedicated setup (`sbx secret rm github`). A fresh dedicated installation:
+Use a **dedicated sbx setup** with default-deny network policy, no registered MCP servers, no stored secrets other than the agents' model secrets and, if wanted, a `github` secret (see below) — check with `sbx secret ls` — and SSH agent forwarding disabled. sbx injects any other stored service secret into every sandbox, so remove those from this dedicated setup (for example `sbx secret rm ghcr`). A fresh dedicated installation:
 
 ```sh
 sbx policy init deny-all
@@ -95,11 +95,12 @@ The launcher adds sandbox-scoped TCP/443 allowances from [config/network-policy.
 
 - **Model/auth hosts** (`agents`), per agent — deliberately small; add exact domains only when a flow requires them.
 - **Other hosts** (`hosts`, every agent): `docs.aws.amazon.com`.
+- **GitHub API** (`github`): `api.github.com`, added only when a `github` secret is stored (`sbx secret set github -t <token>`); otherwise GitHub stays unreachable. This is opt-in and user-controlled, same spirit as the restricted AWS role: scope the token yourself (a fine-grained, read-only PAT works well) to whatever reads you want an agent to have — issues, pull requests, commit/merge history, etc. Only the API host is allowed, not `github.com` itself, so this does not enable `git clone`/`push` over HTTPS; use the mounted project's existing local git history for that. The launcher re-checks for the secret on every launch and resume, so removing it (`sbx secret rm github`) revokes access on the next resume.
 - **AWS domains** (`awsDomains`, per partition): `**.amazonaws.com` and `**.api.aws` (`**.amazonaws.com.cn` in China) — every AWS service API in every region plus global endpoints (S3, CloudWatch Logs, Route 53, ACM, Organizations, Cost Explorer, pricing API).
 
 Built-in kits also grant exact download/package endpoints; the launcher adds matching denies for those outside the list. Only the configured wildcards are accepted — any other inherited wildcard (like `**`) is rejected. After applying rules, the launcher reads the policy back and probes a host beneath each wildcard, each exact host, lookalike domains (`amazonaws.com.example.com`), private/metadata addresses, and an in-VM proxy denial before handing over credentials — there is no skip-policy fallback. Host-wide policy/SSH changes affect other sessions, hence the dedicated setup.
 
-**`**.amazonaws.com` is a deliberate trade-off.** Besides AWS APIs, it admits hosts any AWS customer controls — EC2 public DNS, load balancers, API Gateway, S3 buckets, RDS/OpenSearch endpoints — so an agent could send data it reads to a server someone else runs on AWS. The restricted, read-only, short-lived role is the main control; the allowlist doesn't prevent exfiltration within AWS. Replace `awsDomains` wildcards with exact hosts if that matters for your use. Organizations data is only readable from the management or a delegated administrator account. Package registries, Git hosts, and LAN destinations aren't enabled — install needed dependencies in a reviewed template.
+**`**.amazonaws.com` is a deliberate trade-off.** Besides AWS APIs, it admits hosts any AWS customer controls — EC2 public DNS, load balancers, API Gateway, S3 buckets, RDS/OpenSearch endpoints — so an agent could send data it reads to a server someone else runs on AWS. The restricted, read-only, short-lived role is the main control; the allowlist doesn't prevent exfiltration within AWS. Replace `awsDomains` wildcards with exact hosts if that matters for your use. Organizations data is only readable from the management or a delegated administrator account. Package registries, `git clone`/`push` over HTTPS, and LAN destinations aren't enabled — install needed dependencies in a reviewed template. The GitHub API is reachable only when you opt in with a stored `github` secret.
 
 Resume applies the current list to an existing sandbox before checking it, so allowlist changes take effect on the next resume.
 

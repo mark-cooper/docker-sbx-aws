@@ -93,6 +93,18 @@ test("builds agent, shared and partition AWS domains; rejects malformed entries"
   ])
     assert.throws(() => destinations({ agents: { claude: [bad] } }, "claude", target), /DNS/);
 });
+test("GitHub API hosts are added only when the caller confirms a stored github secret", () => {
+  const config = { agents: { claude: ["api.anthropic.com"] }, github: ["api.github.com"] };
+  const target = { region: "us-west-2", partition: "aws" } as Target;
+  assert.deepEqual(destinations(config, "claude", target), ["api.anthropic.com:443"]);
+  assert.deepEqual(destinations(config, "claude", target, { github: false }), [
+    "api.anthropic.com:443",
+  ]);
+  assert.deepEqual(destinations(config, "claude", target, { github: true }), [
+    "api.anthropic.com:443",
+    "api.github.com:443",
+  ]);
+});
 test("approved wildcards admit hosts beneath them; broader wildcards stay forbidden", () => {
   const allowed = ["**.amazonaws.com:443", "*.example.org:443"];
   // The literal approved wildcard, and exact hosts beneath it (for example an

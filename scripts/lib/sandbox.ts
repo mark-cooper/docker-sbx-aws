@@ -61,6 +61,13 @@ export async function configuration(): Promise<{ runtime: Runtime; network: Netw
 // only on that provider's hosts, which the audited allowlist admits only for
 // the matching agent.
 const modelSecrets = ["anthropic", "openai"];
+// A stored github secret is tolerated too, but unlike model secrets it is
+// opt-in and user-controlled: the launcher only widens the allowlist to the
+// GitHub API hosts in config/network-policy.json (see hasGithubSecret) when
+// one is present, and leaves it absent otherwise. The token's own scope
+// (read-only, fine-grained, etc.) is the user's responsibility to set.
+const githubSecret = "github";
+const toleratedServiceSecrets = [...modelSecrets, githubSecret];
 interface SecretList {
   secrets?: { scope?: string; type?: string; name?: string }[];
   custom_secrets?: unknown[];
@@ -71,10 +78,16 @@ export function unexpectedSecrets(list: SecretList): string[] {
   const unexpected = list.secrets
     // Registry secrets stay on the host unless explicitly shared with sandboxes.
     .filter((secret) => secret.type !== "registry")
-    .filter((secret) => secret.type !== "service" || !modelSecrets.includes(secret.name ?? ""))
+    .filter(
+      (secret) => secret.type !== "service" || !toleratedServiceSecrets.includes(secret.name ?? ""),
+    )
     .map((secret) => `${secret.type ?? "unknown"} secret ${JSON.stringify(secret.name ?? "")}`);
   if (list.custom_secrets.length) unexpected.push(`${list.custom_secrets.length} custom secret(s)`);
   return unexpected;
+}
+export function hasGithubSecret(list: SecretList): boolean {
+  if (!Array.isArray(list.secrets)) throw new Error("Unsupported sbx secret JSON schema.");
+  return list.secrets.some((secret) => secret.type === "service" && secret.name === githubSecret);
 }
 
 // config/runtime.json records the oldest sbx version known to work. Newer
@@ -102,7 +115,7 @@ export function checkSbxVersion(output: string, minimum: string): void {
     );
 }
 
-export async function prerequisites(run: Runner, runtime: Runtime): Promise<void> {
+export async function prerequisites(run: Runner, runtime: Runtime): Promise<{ github: boolean }> {
   const aws = await tool(run, "aws", ["--version"], "AWS CLI version check");
   const version = /aws-cli\/2\.(\d+)\./.exec(aws);
   if (!version || Number(version[1]) < 32)
@@ -135,13 +148,13 @@ export async function prerequisites(run: Runner, runtime: Runtime): Promise<void
     throw new Error(
       "sbx SSH agent forwarding must be disabled in a dedicated setup (ssh.agentForwardingEnabled=false). A sanitized client environment alone does not disable its live socket.",
     );
-  const secrets = unexpectedSecrets(
-    await sbxJson<SecretList>(run, ["secret", "ls", "--json"], "sbx secret check"),
-  );
+  const secretList = await sbxJson<SecretList>(run, ["secret", "ls", "--json"], "sbx secret check");
+  const secrets = unexpectedSecrets(secretList);
   if (secrets.length)
     throw new Error(
-      `sbx has stored secrets that it would inject into every sandbox: ${secrets.join(", ")}. Use a dedicated setup without them (for example, sbx secret rm github); secrets are never changed automatically.`,
+      `sbx has stored secrets that it would inject into every sandbox: ${secrets.join(", ")}. Use a dedicated setup without them (for example, sbx secret rm <name>); secrets are never changed automatically.`,
     );
+  return { github: hasGithubSecret(secretList) };
 }
 
 // Global policy when name is omitted, otherwise the sandbox's effective policy.
@@ -239,8 +252,8 @@ export async function doctor(
   run: Runner = execute,
 ): Promise<void> {
   const { runtime, network } = await configuration();
-  await prerequisites(run, runtime);
-  auditPolicy(await listPolicy(run), destinations(network, agent, target));
+  const { github } = await prerequisites(run, runtime);
+  auditPolicy(await listPolicy(run), destinations(network, agent, target, { github }));
   const session = await assumeRestrictedRole(target, run);
   console.log(
     `Direct assumption verified: ${session.identity.Arn}\nExpires: ${session.credentials.Expiration}\nHost checks passed. Sandbox mounts, template, effective policy and in-VM identity are checked during launch.`,
@@ -253,8 +266,8 @@ export async function launch(
   run: Runner = execute,
 ): Promise<string> {
   const { runtime, network } = await configuration();
-  const allowed = destinations(network, options.agent, target);
-  await prerequisites(run, runtime);
+  const { github } = await prerequisites(run, runtime);
+  const allowed = destinations(network, options.agent, target, { github });
   auditPolicy(await listPolicy(run), allowed); // Fail before creating resources or minting credentials.
   // Without a project path the sandbox starts from an empty workspace; the
   // current directory is never used implicitly.
@@ -322,7 +335,7 @@ export async function launch(
       throw new Error("Unexpected template working directory or user.");
     await applyNetworkPolicy(run, name, allowed);
     await inside(run, name, "probe-network");
-    state.expiresAt = await handOffSession(run, name, target);
+    state.expiresAt = await handOffSession(run, name, target, github);
     state.phase = "ready";
     await saveState(state);
     console.log(
@@ -344,7 +357,12 @@ export async function launch(
 
 // Assume the restricted role on the host and hand the session to the sandbox,
 // which verifies its identity before replacing any previous session.
-async function handOffSession(run: Runner, name: string, target: Target): Promise<string> {
+async function handOffSession(
+  run: Runner,
+  name: string,
+  target: Target,
+  github: boolean,
+): Promise<string> {
   const session = await assumeRestrictedRole(target, run);
   validateLifetime(session.credentials.Expiration);
   // Secrets travel on stdin, never as arguments or through a host file.
@@ -353,6 +371,7 @@ async function handOffSession(run: Runner, name: string, target: Target): Promis
       credentials: session.credentials,
       identity: session.identity,
       region: target.region,
+      github,
     }),
   });
   return session.credentials.Expiration;
@@ -388,8 +407,8 @@ export async function resume(
   // Host policy, secrets and settings may have changed since launch; repeat
   // every host-side check that guards a credential handoff.
   const { runtime, network } = await configuration();
-  const allowed = destinations(network, state.agent, state.target);
-  await prerequisites(run, runtime);
+  const { github } = await prerequisites(run, runtime);
+  const allowed = destinations(network, state.agent, state.target, { github });
   auditPolicy(await listPolicy(run), allowed);
   if (!(await exists(run, name)))
     throw new Error(
@@ -399,7 +418,7 @@ export async function resume(
   const remaining = Date.parse(state.expiresAt ?? "") - Date.now();
   if (!(remaining > renewalWindow)) {
     console.log(`Renewing the restricted AWS session for ${name}.`);
-    state.expiresAt = await handOffSession(run, name, state.target);
+    state.expiresAt = await handOffSession(run, name, state.target, github);
     await saveState(state);
   }
   console.log(`Resuming ${name}\nExpires: ${state.expiresAt}`);
@@ -437,7 +456,14 @@ export async function buildTemplate(agent: string, run: Runner = execute): Promi
     await tool(
       run,
       "docker",
-      ["build", "--tag", template.tag, "--file", join(root, "sandbox", `Dockerfile.${agent}`), root],
+      [
+        "build",
+        "--tag",
+        template.tag,
+        "--file",
+        join(root, "sandbox", `Dockerfile.${agent}`),
+        root,
+      ],
       "Template build",
       { interactive: true, timeout: 1_800_000 },
     );

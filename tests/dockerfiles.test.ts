@@ -3,9 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 test("agent Dockerfiles share an identical body, differing only in their base image", async () => {
-  const files = (await readdir("sandbox"))
-    .filter((name) => name.startsWith("Dockerfile."))
-    .sort();
+  const files = (await readdir("sandbox")).filter((name) => name.startsWith("Dockerfile.")).sort();
   assert.ok(files.length >= 2, "expected at least two agent Dockerfiles to compare");
 
   const bodies = new Map<string, string>();
@@ -18,5 +16,6 @@ test("agent Dockerfiles share an identical body, differing only in their base im
   }
 
   const [first, ...rest] = bodies.entries();
-  for (const [file, body] of rest) assert.equal(body, first[1], `${file} has drifted from ${first[0]}`);
+  for (const [file, body] of rest)
+    assert.equal(body, first[1], `${file} has drifted from ${first[0]}`);
 });

@@ -5,6 +5,10 @@ export interface NetworkConfig {
   agents: Record<string, string[]>;
   // Other hosts every agent may reach, such as AWS documentation.
   hosts?: string[];
+  // GitHub API hosts, added only when the user opted in with a stored github
+  // secret (see hasGithubSecret in sandbox.ts). Scoped to the API, not
+  // github.com itself, so no git clone/push over HTTPS.
+  github?: string[];
   // AWS domains per partition, usually sbx multi-label wildcards (**.amazonaws.com).
   awsDomains?: Record<string, string[]>;
 }
@@ -17,10 +21,16 @@ export interface Rule {
   applies_to?: string;
 }
 
-export function destinations(config: NetworkConfig, agent: string, target: Target): string[] {
+export function destinations(
+  config: NetworkConfig,
+  agent: string,
+  target: Target,
+  options: { github?: boolean } = {},
+): string[] {
   const hosts = [
     ...(config.agents[agent] ?? []),
     ...(config.hosts ?? []),
+    ...(options.github ? (config.github ?? []) : []),
     ...(config.awsDomains?.[target.partition] ?? []),
   ];
   // DNS names, optionally with one leading sbx wildcard label (*. or **.) for a

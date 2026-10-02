@@ -16,10 +16,11 @@ import { join } from "node:path";
 const sessionDir = join(homedir(), ".readonly-session");
 // sbx sets GH_TOKEN in every sandbox to a proxy placeholder shaped like a real
 // token. sbx never places service credentials in the sandbox; its proxy swaps
-// them in on the wire only for stored secrets. The host rejects a stored
-// github secret and the allowlist admits no GitHub host, so the value is inert
-// whatever it is. It is tolerated here, not matched against a version-specific
-// constant, and unset for the agent's session.
+// them in on the wire only for stored secrets, only on hosts the allowlist
+// admits. It is tolerated here at check time, not matched against a
+// version-specific constant: unset for the agent's session unless the host
+// confirmed a github secret is stored and handed that on via inject (see
+// below), in which case the GitHub API allowlist entries make it live.
 const sbxProxyPlaceholders = ["GH_TOKEN"];
 // Shared skills are disabled at creation, but since sbx 0.46.0 kits may still
 // write into these directories. The template installs none.
@@ -127,9 +128,23 @@ try {
     const envFile = join(sessionDir, "aws.sh");
     if (existsSync(envFile) && lstatSync(envFile).isSymbolicLink())
       throw new Error("Invalid session credential path.");
+    // Only when the host confirmed a stored github secret (and widened the
+    // allowlist to the GitHub API hosts accordingly) is the placeholder left
+    // in place, so the proxy's on-the-wire substitution has a token to swap.
+    const github = data.github === true;
+    const unset = [
+      "SSH_AUTH_SOCK",
+      ...(github ? [] : ["GH_TOKEN", "GITHUB_TOKEN"]),
+      "AWS_PROFILE",
+      "AWS_DEFAULT_PROFILE",
+      "AWS_WEB_IDENTITY_TOKEN_FILE",
+      "AWS_ROLE_ARN",
+      "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+      "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    ];
     writeFileSync(
       envFile,
-      "unset SSH_AUTH_SOCK GH_TOKEN GITHUB_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI\n" +
+      `unset ${unset.join(" ")}\n` +
         Object.entries(awsEnv)
           .map(([k, v]) => `export ${k}=${quote(String(v))}`)
           .join("\n") +

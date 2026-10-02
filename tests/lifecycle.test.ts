@@ -9,6 +9,7 @@ import {
   checkSbxVersion,
   configuration,
   destroy,
+  hasGithubSecret,
   launch,
   resume,
   sbxUpgradeHint,
@@ -254,11 +255,20 @@ test("without a project path the workspace starts empty and never touches the cu
     assert.equal(state.project, undefined);
     await destroy(name, run);
   }));
-test("stored non-model sbx secrets stop launch before creating a sandbox", async () =>
+test("stored non-model, non-github sbx secrets stop launch before creating a sandbox", async () =>
+  fixture(async ({ project, run, calls, control }) => {
+    control.secrets = [{ scope: "global", type: "service", name: "ghcr" }];
+    await assert.rejects(launch(target, { agent: "claude", project }, run), /"ghcr"/);
+    assert.ok(!calls.some((c) => c.args[0] === "create" || c.args[1] === "assume-role"));
+  }));
+test("a stored github secret is tolerated, widens the allowlist, and is handed to inject", async () =>
   fixture(async ({ project, run, calls, control }) => {
     control.secrets = [{ scope: "global", type: "service", name: "github" }];
-    await assert.rejects(launch(target, { agent: "claude", project }, run), /"github"/);
-    assert.ok(!calls.some((c) => c.args[0] === "create" || c.args[1] === "assume-role"));
+    const name = await launch(target, { agent: "claude", project }, run);
+    assert.ok(calls.some((c) => c.args[1] === "allow" && c.args.at(-1) === "api.github.com:443"));
+    const inject = calls.find((c) => c.args.at(-1) === "inject")!;
+    assert.equal(JSON.parse(inject.options.input!).github, true);
+    await destroy(name, run);
   }));
 test("resume repeats host checks, renews only near expiry, and refuses failed launches", async () =>
   fixture(async ({ run, calls, control }) => {
@@ -284,8 +294,8 @@ test("resume repeats host checks, renews only near expiry, and refuses failed la
     const inject = calls.filter((c) => c.args.at(-1) === "inject").at(-1)!;
     assert.ok(!inject.args.join(" ").includes("EXAMPLE_SECRET"));
     // Host checks still gate a resume.
-    control.secrets = [{ scope: "global", type: "service", name: "github" }];
-    await assert.rejects(resume(name, run), /"github"/);
+    control.secrets = [{ scope: "global", type: "service", name: "ghcr" }];
+    await assert.rejects(resume(name, run), /"ghcr"/);
     assert.equal(attaches(), 3);
     control.secrets = [];
     await saveState({ ...state, phase: "failed" });
@@ -297,11 +307,12 @@ test("resume checks an explicitly confirmed agent against the sandbox's own", as
     await resume(name, run, "claude");
     await assert.rejects(resume(name, run, "codex"), /is a claude sandbox, not codex/);
   }));
-test("only model secrets are tolerated", () => {
+test("only model secrets and the opt-in github secret are tolerated", () => {
   const service = (name: string) => ({ scope: "global", type: "service", name });
   const list = (...names: string[]) => ({ secrets: names.map(service), custom_secrets: [] });
   assert.deepEqual(unexpectedSecrets(list("anthropic", "openai")), []);
-  assert.deepEqual(unexpectedSecrets(list("anthropic", "github")), ['service secret "github"']);
+  assert.deepEqual(unexpectedSecrets(list("anthropic", "github")), []);
+  assert.deepEqual(unexpectedSecrets(list("anthropic", "ghcr")), ['service secret "ghcr"']);
   assert.deepEqual(
     unexpectedSecrets({
       secrets: [{ scope: "global", type: "registry", name: "ghcr.io" }],
@@ -311,6 +322,17 @@ test("only model secrets are tolerated", () => {
   );
   assert.equal(unexpectedSecrets({ secrets: [], custom_secrets: [{}] }).length, 1);
   assert.throws(() => unexpectedSecrets({}), /schema/);
+});
+test("the github secret is detected independently of unrelated stored secrets", () => {
+  const service = (name: string) => ({ scope: "global", type: "service", name });
+  const list = (...names: string[]) => ({ secrets: names.map(service), custom_secrets: [] });
+  assert.equal(hasGithubSecret(list("anthropic", "openai")), false);
+  assert.equal(hasGithubSecret(list("anthropic", "github")), true);
+  assert.equal(
+    hasGithubSecret({ secrets: [{ scope: "global", type: "registry", name: "github" }] }),
+    false,
+  );
+  assert.throws(() => hasGithubSecret({}), /schema/);
 });
 test("sbx version is a minimum: equal and newer pass, older names an upgrade command", () => {
   for (const version of ["0.46.0", "0.46.1", "0.47.0", "0.100.0", "1.0.0"])
