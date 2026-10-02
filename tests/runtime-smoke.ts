@@ -5,16 +5,10 @@ import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitEnvironment, run, successful } from "../scripts/lib/process.ts";
+import { hostEnvironment, run, successful } from "../scripts/lib/process.ts";
 import { checkSbxVersion, configuration, unexpectedSecrets } from "../scripts/lib/sandbox.ts";
 
-const env = {
-  ...gitEnvironment(),
-  GIT_AUTHOR_NAME: "Runtime test",
-  GIT_AUTHOR_EMAIL: "test@example.invalid",
-  GIT_COMMITTER_NAME: "Runtime test",
-  GIT_COMMITTER_EMAIL: "test@example.invalid",
-};
+const env = hostEnvironment();
 const dir = await mkdtemp(join(tmpdir(), "readonly-runtime-"));
 const { runtime } = await configuration();
 async function call(tool: string, args: string[], cwd?: string, input?: string) {
@@ -27,15 +21,10 @@ const cliVersion = await call("sbx", ["version"]);
 checkSbxVersion(cliVersion, runtime.minSbxVersion);
 console.log(`Testing against ${cliVersion} (minimum ${runtime.minSbxVersion}).`);
 try {
-  const project = join(dir, "repo");
-  await mkdir(project);
-  await call("git", ["init", "--initial-branch=main"], project);
-  await writeFile(join(project, "example.txt"), "initial\n");
-  await call("git", ["add", "."], project);
-  await call("git", ["commit", "-m", "Fixture"], project);
-  const inputBundle = join(dir, "input.bundle");
-  await call("git", ["bundle", "create", inputBundle, "HEAD"], project);
   for (const agent of ["claude", "codex"]) {
+    const project = join(dir, `project-${agent}`);
+    await mkdir(project);
+    await writeFile(join(project, "example.txt"), "initial\n");
     const name = `readonly-test-${agent}-${randomBytes(6).toString("hex")}`;
     // Same host-side guard as launch: stored secrets are injected into every sandbox.
     const secrets = unexpectedSecrets(JSON.parse(await call("sbx", ["secret", "ls", "--json"])));
@@ -55,10 +44,11 @@ try {
         "--template",
         runtime.templates[agent].tag,
         agent,
+        project,
       ]);
       const info = JSON.parse(await call("sbx", ["inspect", name, "--json"]));
       assert.deepEqual(info.runtime_mounts, []);
-      assert.ok(!info.workspace);
+      assert.ok(info.workspace);
       // The daemon, not just the CLI, must meet the minimum and match the CLI:
       // some sbx changes apply only after a daemon restart.
       checkSbxVersion(info.daemon_version, runtime.minSbxVersion);
@@ -91,25 +81,14 @@ try {
       await call("sbx", ["exec", name, "rm", "-r", "/home/agent/.claude/skills/planted"]);
       await boot("check");
       await boot("probe-network");
-      // Empty-workspace mode (no --project), in a separate directory.
-      const empty = "/home/agent/empty-workspace";
-      await call("sbx", ["exec", name, "mkdir", empty]);
-      const emptyBoot = (command: string) =>
-        call("sbx", ["exec", "--workdir", empty, name, "node", "/tmp/bootstrap.ts", command]);
-      const emptyBase = JSON.parse(await emptyBoot("init"));
-      await call("sbx", ["exec", name, "touch", `${empty}/notes.md`]);
-      assert.notEqual(JSON.parse(await emptyBoot("snapshot")).fingerprint, emptyBase.fingerprint);
-      await call("sbx", ["cp", inputBundle, `${name}:/home/agent/readonly-input.bundle`]);
-      const initial = JSON.parse(await boot("clone"));
       await call("sbx", [
         "exec",
         name,
         "node",
         "-e",
-        'const fs=require("fs");fs.writeFileSync("example.txt","changed\\n");fs.writeFileSync("new.txt","untracked\\n");',
+        'const fs=require("fs");fs.writeFileSync("example.txt","changed\\n");',
       ]);
-      const changed = JSON.parse(await boot("snapshot"));
-      assert.notEqual(changed.fingerprint, initial.fingerprint);
+      assert.equal(await readFile(join(project, "example.txt"), "utf8"), "changed\n");
       // A synthetic aws executable validates the stdin-to-environment transport;
       // network is still deny-all, and no real AWS session is involved.
       const fakeDir = join(dir, `fake-${agent}`);
@@ -179,21 +158,8 @@ try {
         ]),
         "1",
       );
-      const snapshot = JSON.parse(await boot("collect"));
-      assert.equal(snapshot.fingerprint, changed.fingerprint);
-      const output = join(dir, `${agent}.bundle`);
-      await call("sbx", ["cp", `${name}:/tmp/readonly-output.bundle`, output]);
-      await call("git", ["bundle", "verify", output], project);
-      await call("git", ["fetch", output, "refs/readonly-export/snapshot"], project);
-      assert.equal(await call("git", ["show", "FETCH_HEAD:new.txt"], project), "untracked");
-      assert.equal(await call("git", ["show", "FETCH_HEAD:example.txt"], project), "changed");
-      assert.equal(await readFile(join(project, "example.txt"), "utf8"), "initial\n");
-      assert.doesNotMatch(
-        await call("git", ["ls-tree", "-r", "--name-only", "FETCH_HEAD"], project),
-        /readonly-session|aws\.sh/,
-      );
       console.log(
-        `${agent}: mountless clone, proxy denial, synthetic credential handoff, persistent environment, and work export passed.`,
+        `${agent}: mounted edits, proxy denial, synthetic credential handoff, and persistent environment passed.`,
       );
     } finally {
       await call("sbx", ["rm", "--force", name]);

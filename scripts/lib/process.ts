@@ -111,12 +111,6 @@ export function hostEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.Pr
 
 export const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
 
-// Host Git runs without system/global config, so user hooks, aliases and
-// credential helpers cannot affect bundle creation or verification.
-export function gitEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...hostEnvironment(env), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: nullDevice };
-}
-
 export function awsEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const clean = hostEnvironment(env);
   // Preserve only host credential-file locations and TLS settings. Ambient keys,

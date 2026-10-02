@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -7,7 +7,6 @@ import type { Runner, RunOptions } from "../scripts/lib/process.ts";
 import type { Target } from "../scripts/lib/profiles.ts";
 import {
   checkSbxVersion,
-  collect,
   configuration,
   destroy,
   launch,
@@ -42,7 +41,6 @@ async function fixture(
       injectFails: boolean;
       createFails: boolean;
       secrets: { scope: string; type: string; name: string }[];
-      fingerprint: string;
     };
   }) => Promise<void>,
 ) {
@@ -57,9 +55,9 @@ async function fixture(
       injectFails: false,
       createFails: false,
       secrets: [] as { scope: string; type: string; name: string }[],
-      fingerprint: "a".repeat(64),
     };
   let name = "",
+    mounted = false,
     identity = {};
   // Sandbox-scoped allows the launcher has added, as sbx would record them.
   const sandboxAllows = new Set<string>();
@@ -93,10 +91,6 @@ async function fixture(
         result = args.includes("--profile")
           ? { Account: "111111111111", Arn: "source", UserId: "source-id" }
           : identity;
-    } else if (tool === "git") {
-      if (args[0] === "rev-parse")
-        result = args.includes("--show-toplevel") ? project : "b".repeat(40);
-      else result = "";
     } else if (args[0] === "version") result = `sbx version: v${minSbxVersion} test`;
     else if (args[0] === "mcp") result = { servers: [] };
     else if (args[0] === "secret") result = { secrets: control.secrets, custom_secrets: [] };
@@ -104,9 +98,18 @@ async function fixture(
       result = args[2] === "ssh.agentForwardingEnabled" ? "false" : "";
     else if (args[0] === "create") {
       if (control.createFails) code = 1;
-      else name = args[args.indexOf("--name") + 1];
+      else {
+        name = args[args.indexOf("--name") + 1];
+        mounted = args.includes(project);
+      }
     } else if (args[0] === "ls") result = { sandboxes: name ? [{ name, status: "stopped" }] : [] };
-    else if (args[0] === "inspect") result = { name, agent: "claude", runtime_mounts: [] };
+    else if (args[0] === "inspect")
+      result = {
+        name,
+        agent: "claude",
+        runtime_mounts: [],
+        workspace: mounted ? "/home/agent/workspace" : undefined,
+      };
     else if (args[0] === "policy" && args[1] === "allow") sandboxAllows.add(args.at(-1)!);
     else if (args[0] === "policy" && args[1] === "ls")
       result = {
@@ -150,16 +153,8 @@ async function fixture(
       else if (command === "inject") {
         result = { identity };
         if (control.injectFails) code = 1;
-      } else if (["clone", "init", "snapshot", "collect"].includes(command!))
-        result = {
-          fingerprint: control.fingerprint,
-          tree: "c".repeat(40),
-          head: "b".repeat(40),
-          commit: "d".repeat(40),
-        };
-      else result = "blocked";
-    } else if (args[0] === "cp" && args[1].endsWith("readonly-output.bundle"))
-      await writeFile(args[2], "EXAMPLE_BUNDLE");
+      } else result = "blocked";
+    }
     return {
       code,
       stdout: typeof result === "string" ? result : JSON.stringify(result),
@@ -174,11 +169,11 @@ async function fixture(
     await rm(dir, { recursive: true });
   }
 }
-test("launch orders checks before handoff, keeps secrets on stdin, and preserves clone work", async () =>
-  fixture(async ({ project, run, calls, control }) => {
+test("launch orders checks before handoff, keeps secrets on stdin, and mounts the project", async () =>
+  fixture(async ({ project, run, calls }) => {
     const name = await launch(target, { agent: "claude", project }, run);
     const create = calls.find((c) => c.args[0] === "create")!;
-    assert.ok(!create.args.includes(project));
+    assert.ok(create.args.includes(project));
     assert.ok(create.args.includes("--skills"));
     assert.ok(create.args.includes("--static-mcp="));
     const inject = calls.find((c) => c.args.at(-1) === "inject")!;
@@ -198,15 +193,7 @@ test("launch orders checks before handoff, keeps secrets on stdin, and preserves
     const state = await loadState(name);
     assert.equal(state.phase, "ready");
     assert.doesNotMatch(JSON.stringify(state), /EXAMPLE_SECRET|EXAMPLE_TOKEN/);
-    control.fingerprint = "e".repeat(64);
-    await assert.rejects(destroy(name, false, run), /uncollected/);
-    assert.ok(!calls.some((c) => c.args[0] === "rm"));
-    const bundle = await collect(name, run);
-    assert.equal(await readFile(bundle, "utf8"), "EXAMPLE_BUNDLE");
-    control.fingerprint = "f".repeat(64);
-    await assert.rejects(destroy(name, false, run), /uncollected/);
-    control.fingerprint = "e".repeat(64);
-    await destroy(name, false, run);
+    await destroy(name, run);
     assert.equal((await loadState(name)).phase, "destroyed");
   }));
 test("broad host policy stops before creating a sandbox or contacting AWS STS", async () =>
@@ -227,20 +214,31 @@ test("denied assumption and failed in-VM verification never start an agent", asy
       );
     });
 });
-test("direct mode mounts only explicitly selected project; destruction never deletes host files", async () =>
+test("project mode mounts only explicitly selected project; destruction never deletes host files", async () =>
   fixture(async ({ project, run, calls }) => {
-    const name = await launch(target, { agent: "claude", project, direct: true }, run);
+    const name = await launch(target, { agent: "claude", project }, run);
     assert.ok(calls.find((c) => c.args[0] === "create")!.args.includes(project));
     assert.ok(!calls.some((c) => c.args[0] === "bundle" && c.args[1] === "create"));
-    await destroy(name, false, run);
+    await destroy(name, run);
     assert.ok((await readdir(project)).includes("state"));
+  }));
+test("legacy clone sessions cannot be destroyed by the new launcher", async () =>
+  fixture(async ({ project, run, calls }) => {
+    const name = await launch(target, { agent: "claude", project }, run);
+    const state = await loadState(name);
+    await writeFile(
+      join(process.env.READONLY_SANDBOX_STATE_DIR!, "sessions", `${name}.json`),
+      JSON.stringify({ ...state, version: 1, direct: false }),
+    );
+    await assert.rejects(destroy(name, run), /Legacy sandbox session/);
+    assert.ok(!calls.some((c) => c.args[0] === "rm"));
   }));
 test("a launch that fails during creation can still be destroyed", async () =>
   fixture(async ({ project, run, calls, control }) => {
     control.createFails = true;
     await assert.rejects(launch(target, { agent: "claude", project }, run), /Session retained/);
     const name = calls.find((c) => c.args[0] === "create")!.args[2];
-    await destroy(name, false, run);
+    await destroy(name, run);
     assert.equal((await loadState(name)).phase, "destroyed");
     assert.ok(!calls.some((c) => c.args[0] === "rm"));
   }));
@@ -249,19 +247,12 @@ test("without --project the workspace starts empty and never touches the current
     const name = await launch(target, { agent: "claude" }, run);
     assert.ok(!calls.some((c) => c.tool === "git" && c.args[0] === "rev-parse"));
     assert.ok(!calls.some((c) => c.args[0] === "cp"));
-    assert.ok(calls.some((c) => c.args.at(-1) === "init"));
+    assert.ok(!calls.some((c) => c.args.at(-1) === "init"));
     const create = calls.find((c) => c.args[0] === "create")!;
     assert.equal(create.args.at(-1), "claude");
     const state = await loadState(name);
     assert.equal(state.project, undefined);
-    assert.ok(state.baseFingerprint);
-    const bundle = await collect(name, run);
-    assert.equal(await readFile(bundle, "utf8"), "EXAMPLE_BUNDLE");
-    await destroy(name, false, run);
-    await assert.rejects(
-      launch(target, { agent: "claude", direct: true }, run),
-      /requires --project/,
-    );
+    await destroy(name, run);
   }));
 test("stored non-model sbx secrets stop launch before creating a sandbox", async () =>
   fixture(async ({ project, run, calls, control }) => {

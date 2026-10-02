@@ -26,12 +26,8 @@ run = [{ task = "sandbox:template claude" }, { task = "sandbox:template codex" }
 description = "Reattach to a managed sandbox, renewing its AWS session if near expiry"
 run = "node scripts/sandbox.ts resume"
 
-[tasks."sandbox:collect"]
-description = "Export sandbox work as a Git bundle"
-run = "node scripts/sandbox.ts collect"
-
 [tasks."sandbox:destroy"]
-description = "Remove a managed sandbox after checking for uncollected work"
+description = "Remove a managed sandbox"
 run = "node scripts/sandbox.ts destroy"
 
 [tasks.check]

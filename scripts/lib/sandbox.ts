@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { access, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,17 +7,13 @@ import { assumeRestrictedRole, validateLifetime } from "./aws.ts";
 import type { NetworkConfig } from "./network.ts";
 import { auditPolicy, blockedProbes, destinations, policyChanges, probes } from "./network.ts";
 import type { Runner, RunOptions } from "./process.ts";
-import { run as execute, gitEnvironment, hostEnvironment, json, successful } from "./process.ts";
+import { run as execute, hostEnvironment, json, successful } from "./process.ts";
 import type { Target } from "./profiles.ts";
 import type { State } from "./state.ts";
-import { loadState, saveState, stateRoot, withTemp } from "./state.ts";
+import { loadState, saveState, withTemp } from "./state.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const bootstrap = "/opt/readonly-sandbox/bootstrap.ts";
-// Agent-owned and outside the project: sbx cp writes root-owned files, which
-// agent cannot unlink from sticky-bit /tmp.
-const inputBundle = "/home/agent/readonly-input.bundle";
-const outputBundle = "/tmp/readonly-output.bundle";
 export interface Runtime {
   minSbxVersion: string;
   templates: Record<string, { base: string; tag: string }>;
@@ -25,7 +21,6 @@ export interface Runtime {
 export interface LaunchOptions {
   agent: string;
   project?: string;
-  direct?: boolean;
 }
 interface Inspection {
   name: string;
@@ -34,12 +29,6 @@ interface Inspection {
   workspace?: string;
   workspaces?: unknown[];
   [key: string]: unknown;
-}
-interface Snapshot {
-  fingerprint: string;
-  tree: string;
-  head: string;
-  commit?: string;
 }
 
 // Host tools always run with a sanitized environment and withheld output.
@@ -57,8 +46,6 @@ const sbx = (run: Runner, args: string[], operation: string, options?: RunOption
 async function sbxJson<T>(run: Runner, args: string[], operation: string): Promise<T> {
   return json<T>(await run("sbx", args, { env: hostEnvironment() }), operation);
 }
-const git = (run: Runner, args: string[], cwd: string, operation: string) =>
-  tool(run, "git", args, operation, { cwd, env: gitEnvironment() });
 
 export async function configuration(): Promise<{ runtime: Runtime; network: NetworkConfig }> {
   const [runtime, network] = await Promise.all(
@@ -121,7 +108,6 @@ export async function prerequisites(run: Runner, runtime: Runtime): Promise<void
   if (!version || Number(version[1]) < 32)
     throw new Error("AWS CLI v2.32 or later is required for aws login.");
   checkSbxVersion(await sbx(run, ["version"], "sbx version check"), runtime.minSbxVersion);
-  await tool(run, "git", ["--version"], "Git version check");
   const mcp = await sbxJson<{ servers: unknown[] }>(
     run,
     ["mcp", "ls", "--json"],
@@ -246,21 +232,6 @@ function inside(
     { input },
   );
 }
-function parseSnapshot(text: string): Snapshot {
-  let snapshot: Snapshot;
-  try {
-    snapshot = JSON.parse(text);
-  } catch {
-    throw new Error("Invalid sandbox snapshot response.");
-  }
-  if (
-    !/^[a-f0-9]{64}$/.test(snapshot.fingerprint) ||
-    !/^[a-f0-9]{40,64}$/.test(snapshot.head) ||
-    !/^[a-f0-9]{40,64}$/.test(snapshot.tree)
-  )
-    throw new Error("Invalid sandbox snapshot identifiers.");
-  return snapshot;
-}
 
 export async function doctor(
   target: Target,
@@ -287,8 +258,6 @@ export async function launch(
   auditPolicy(await listPolicy(run), allowed); // Fail before creating resources or minting credentials.
   // Without --project the sandbox starts from an empty workspace. The current
   // directory is never a default: mise tasks always run from the launcher root.
-  if (options.direct && options.project === undefined)
-    throw new Error("--direct requires --project.");
   const project =
     options.project === undefined ? undefined : await realpath(resolve(options.project));
   if (project) {
@@ -299,37 +268,19 @@ export async function launch(
   }
   const name = `ro-${options.agent}-${randomBytes(6).toString("hex")}`;
   const state: State = {
-    version: 1,
+    version: 2,
     name,
     agent: options.agent,
     target,
     project,
-    direct: !!options.direct,
     phase: "creating",
     createdAt: new Date().toISOString(),
   };
-  if (project && !state.direct) {
-    const top = await git(
-      run,
-      ["rev-parse", "--show-toplevel"],
-      project,
-      "Git repository check (--project must be a repository root; use --direct, or omit --project for an empty workspace)",
-    );
-    if ((await realpath(top)) !== project)
-      throw new Error("Clone mode requires --project to be the repository root.");
-    const dirty = await git(
-      run,
-      ["status", "--porcelain", "--untracked-files=all"],
-      project,
-      "Git worktree check",
-    );
-    if (dirty)
-      throw new Error(
-        "Clone mode transfers committed HEAD only. Commit/stash changes first, or explicitly use --direct.",
-      );
-    await git(run, ["rev-parse", "--verify", "HEAD"], project, "Git HEAD check");
-  }
   await saveState(state);
+  if (!project)
+    console.warn(
+      "Warning: Empty workspace files stay in the sandbox and are lost when it is destroyed.",
+    );
   console.log(
     `Creating ${name}: profile=${JSON.stringify(target.profile)} source=${JSON.stringify(target.sourceProfile)} role=${target.roleArn} region=${target.region}`,
   );
@@ -348,7 +299,7 @@ export async function launch(
         "--template",
         runtime.templates[options.agent].tag,
         options.agent,
-        ...(state.direct && project ? [project] : []),
+        ...(project ? [project] : []),
       ],
       "Sandbox creation (build the template first)",
       { timeout: 600_000 },
@@ -361,36 +312,21 @@ export async function launch(
       info.runtime_mounts.length
     )
       throw new Error("Unexpected sandbox identity or runtime mounts.");
-    // Mountless clone mode has neither workspace nor additional workspaces.
-    if (
-      !state.direct &&
-      (info.workspace || (Array.isArray(info.workspaces) && info.workspaces.length))
-    )
-      throw new Error("Clone sandbox unexpectedly exposes a host workspace.");
+    // Empty mode must not expose a host workspace.
+    if (!project && (info.workspace || (Array.isArray(info.workspaces) && info.workspaces.length)))
+      throw new Error("Empty sandbox unexpectedly exposes a host workspace.");
+    if (project && !info.workspace)
+      throw new Error("Project sandbox did not mount the selected directory.");
     const checked = JSON.parse(await inside(run, name, "check")) as { cwd: string; home: string };
     if (!checked.cwd?.startsWith("/") || checked.home !== "/home/agent")
       throw new Error("Unexpected template working directory or user.");
-    state.workspace = checked.cwd;
     await applyNetworkPolicy(run, name, allowed);
     await inside(run, name, "probe-network");
-    if (project && !state.direct)
-      await withTemp(async (dir) => {
-        const bundle = join(dir, "input.bundle");
-        await git(run, ["bundle", "create", bundle, "HEAD"], project, "Private clone bundle");
-        await sbx(run, ["cp", bundle, `${name}:${inputBundle}`], "Private clone transfer");
-        state.baseFingerprint = parseSnapshot(
-          await inside(run, name, "clone", { cwd: state.workspace }),
-        ).fingerprint;
-      });
-    else if (!project)
-      state.baseFingerprint = parseSnapshot(
-        await inside(run, name, "init", { cwd: state.workspace }),
-      ).fingerprint;
     state.expiresAt = await handOffSession(run, name, target);
     state.phase = "ready";
     await saveState(state);
     console.log(
-      `Ready: ${name}\nExpires: ${state.expiresAt}\nCollect: mise run sandbox:collect ${name}\nResume: mise run sandbox:resume ${name}`,
+      `Ready: ${name}\nExpires: ${state.expiresAt}\nResume: mise run sandbox:resume ${name}`,
     );
     await attach(run, name);
     return name;
@@ -464,42 +400,7 @@ export async function resume(name: string, run: Runner = execute): Promise<void>
   await attach(run, name);
 }
 
-export async function collect(name: string, run: Runner = execute): Promise<string> {
-  const state = await loadState(name);
-  if (state.phase === "destroyed") throw new Error("Sandbox was already destroyed.");
-  if (state.direct)
-    throw new Error("Direct-mode work is already in the host checkout; use Git there.");
-  if (!state.workspace) throw new Error("Sandbox workspace was not initialized.");
-  await sbx(run, ["stop", name], "Stop agent before collection");
-  const snapshot = parseSnapshot(await inside(run, name, "collect", { cwd: state.workspace }));
-  const dir = join(
-    stateRoot(),
-    "collections",
-    name,
-    `${Date.now()}-${randomBytes(3).toString("hex")}`,
-  );
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  const bundle = join(dir, "work.bundle");
-  await sbx(run, ["cp", `${name}:${outputBundle}`, bundle], "Work collection");
-  // Bundles carry full history, so an empty repository can verify them.
-  await withTemp(async (repo) => {
-    await git(run, ["init", "--bare", "--quiet", "."], repo, "Verification repository");
-    await git(run, ["bundle", "verify", bundle], repo, "Collected bundle verification");
-  });
-  await writeFile(join(dir, "snapshot.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
-  state.collectedFingerprint = snapshot.fingerprint;
-  state.collectedBundle = bundle;
-  await saveState(state);
-  const fetch = (repo: string) =>
-    `git -C "${repo}" fetch "${bundle}" refs/readonly-export/snapshot`;
-  const review = state.project
-    ? `${fetch(state.project)}\n  git -C "${state.project}" diff HEAD FETCH_HEAD`
-    : `git init "${join(dir, "review")}"\n  ${fetch(join(dir, "review"))}\n  git -C "${join(dir, "review")}" checkout FETCH_HEAD`;
-  console.log(`Collected: ${bundle}\nReview with:\n  ${review}`);
-  return bundle;
-}
-
-export async function destroy(name: string, force: boolean, run: Runner = execute): Promise<void> {
+export async function destroy(name: string, run: Runner = execute): Promise<void> {
   const state = await loadState(name);
   if (state.phase === "destroyed") throw new Error("Sandbox was already destroyed.");
   if (!(await exists(run, name))) {
@@ -514,27 +415,11 @@ export async function destroy(name: string, force: boolean, run: Runner = execut
     console.log(`${name} was never created or is already gone; metadata marked destroyed.`);
     return;
   }
-  await sbx(run, ["stop", name], "Stop agent before destruction check");
-  if (!state.direct && !force) {
-    if (!state.workspace || !state.baseFingerprint)
-      throw new Error(
-        "Cannot establish whether this incomplete sandbox contains work; inspect it and use --force to discard it.",
-      );
-    const current = parseSnapshot(await inside(run, name, "snapshot", { cwd: state.workspace }));
-    if (current.fingerprint !== state.baseFingerprint) {
-      if (current.fingerprint !== state.collectedFingerprint || !state.collectedBundle)
-        throw new Error(
-          "Sandbox contains uncollected work. Collect it first, or use --force to discard it.",
-        );
-      await access(state.collectedBundle).catch(() => {
-        throw new Error("Previously collected bundle is missing; collect again before destroying.");
-      });
-    }
-  }
+  await sbx(run, ["stop", name], "Stop agent before destruction");
   await sbx(run, ["rm", "--force", name], "Managed sandbox removal");
   state.phase = "destroyed";
   await saveState(state);
-  console.log(`Destroyed ${name}. Collected bundles are retained.`);
+  console.log(`Destroyed ${name}.`);
 }
 
 export async function buildTemplate(agent: string, run: Runner = execute): Promise<void> {

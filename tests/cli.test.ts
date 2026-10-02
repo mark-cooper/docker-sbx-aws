@@ -32,6 +32,22 @@ test("preview works with empty PATH and never executes credential_process", asyn
     assert.equal(preview.workspaceMode, "empty");
     assert.equal(preview.project, null);
     assert.doesNotMatch(result.stdout, /EXAMPLE_ONLY|should-never-execute/);
+    const mounted = spawnSync(
+      process.execPath,
+      ["scripts/sandbox.ts", "preview", "codex", "demo", "--project", dir],
+      {
+        cwd: resolve("."),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: "",
+          AWS_CONFIG_FILE: config,
+          AWS_SHARED_CREDENTIALS_FILE: credentials,
+        },
+      },
+    );
+    assert.equal(mounted.status, 0, mounted.stderr);
+    assert.equal(JSON.parse(mounted.stdout).workspaceMode, "mounted");
   } finally {
     await rm(dir, { recursive: true });
   }

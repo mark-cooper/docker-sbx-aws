@@ -4,17 +4,12 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Target } from "./profiles.ts";
 
 export interface State {
-  version: 1;
+  version: 2;
   name: string;
   agent: string;
   target: Target;
   // Absent for an empty workspace.
   project?: string;
-  direct: boolean;
-  workspace?: string;
-  baseFingerprint?: string;
-  collectedFingerprint?: string;
-  collectedBundle?: string;
   // Expiry of the restricted AWS session last handed to the sandbox.
   expiresAt?: string;
   phase: "creating" | "ready" | "failed" | "destroyed";
@@ -41,12 +36,19 @@ export async function saveState(state: State): Promise<void> {
 export async function loadState(name: string): Promise<State> {
   validateName(name);
   let state: State;
+  let version: number;
   try {
-    state = JSON.parse(await readFile(join(stateRoot(), "sessions", `${name}.json`), "utf8"));
+    const parsed = JSON.parse(
+      await readFile(join(stateRoot(), "sessions", `${name}.json`), "utf8"),
+    );
+    version = parsed.version;
+    state = parsed;
   } catch {
     throw new Error("Managed session metadata not found or invalid.");
   }
-  if (state.name !== name || state.version !== 1 || !agents.includes(state.agent))
+  if (version === 1)
+    throw new Error("Legacy sandbox session: use the previous launcher to collect or destroy it.");
+  if (state.name !== name || state.version !== 2 || !agents.includes(state.agent))
     throw new Error("Invalid managed session metadata.");
   return state;
 }
