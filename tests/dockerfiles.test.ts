@@ -10,7 +10,7 @@ test("agent Dockerfiles share an identical body, differing only in their base im
 
   const bodies = new Map<string, string>();
   for (const file of files) {
-    const lines = (await readFile(`sandbox/${file}`, "utf8")).split("\n");
+    const lines = (await readFile(`sandbox/${file}`, "utf8")).split(/\r?\n/);
     const baseLine = lines.findIndex((line) => / AS base$/.test(line));
     assert.notEqual(baseLine, -1, `${file} is missing a "FROM ... AS base" line`);
     lines.splice(baseLine, 1);
