@@ -3,6 +3,9 @@
 Launch a coding agent in a local Docker Sandbox with a temporary session for an existing restricted AWS role. Keep your normal host AWS profiles and browser-login flow.
 
 ```sh
+mise install
+mise run build_all
+
 aws login --profile browser-login
 mise run sbx run <agent> --profile profile
 mise run sbx run <agent> /path/to/project --profile profile # mounts the local directory for host edits
