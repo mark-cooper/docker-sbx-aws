@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 FROM docker/sandbox-templates:claude-code@sha256:868e3f5ef10579e06903d42e86448851ed59319ab8b9fba6dea2772c449bb2a6 AS base
-FROM node:24.21.0-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS node
+FROM node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS node
 FROM amazon/aws-cli:2.37.8@sha256:420ab345e847291b541b45d989535f55bcff957c27fa1100fae4aa233e86398c AS aws
 FROM jdxcode/mise:debian@sha256:8544c3c5648d98e93b22389ed8d208ec9470a2c92b027de85bb2dc4ed4545cb8 AS mise
 
