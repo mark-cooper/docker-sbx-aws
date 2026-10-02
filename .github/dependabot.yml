@@ -4,3 +4,7 @@ updates:
     directory: "/sandbox"
     schedule:
       interval: "weekly"
+    ignore:
+      # Node major is pinned to match mise.toml; bump both by hand
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
