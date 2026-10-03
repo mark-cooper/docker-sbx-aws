@@ -6,6 +6,7 @@ import {
   destinations,
   policyChanges,
   probes,
+  toleratedGlobalAllows,
 } from "../scripts/lib/network.ts";
 import type { Target } from "../scripts/lib/profiles.ts";
 
@@ -104,6 +105,17 @@ test("GitHub API hosts are added only when the caller confirms a stored github s
     "api.anthropic.com:443",
     "api.github.com:443",
   ]);
+});
+test("a standing global allow for a tolerated host passes the audit even without a per-launch secret", () => {
+  assert.deepEqual(toleratedGlobalAllows, ["api.github.com:443"]);
+  // Unlike an arbitrary global allow, this one is expected ambient policy from
+  // the dedicated setup's fresh-install commands, not launcher drift.
+  auditPolicy({ rules: [allow(["api.github.com:443"])] }, []);
+  auditPolicy({ rules: [allow(["api.github.com:443"])] }, ["api.github.com:443"]);
+  // Only the exact tolerated entry is exempt; a lookalike or a different host
+  // still trips the audit like any other unexplained global allow.
+  for (const resource of ["github.com:443", "api.github.com:80", "evilapi.github.com:443"])
+    assert.throws(() => auditPolicy({ rules: [allow([resource])] }, []), /outside/);
 });
 test("approved wildcards admit hosts beneath them; broader wildcards stay forbidden", () => {
   const allowed = ["**.amazonaws.com:443", "*.example.org:443"];

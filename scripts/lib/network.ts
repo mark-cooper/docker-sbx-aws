@@ -45,6 +45,14 @@ export function destinations(
   return [...new Set(hosts)].map((host) => `${host}:443`);
 }
 
+// Hosts the dedicated setup's fresh-install commands pre-approve as a
+// standing global sbx allow (see README "Sandbox network policy"), ahead of
+// anything the launcher computes per launch. GitHub reachability is sensible
+// to leave always-on here: the README already requires a scoped, read-only
+// token for any actual access, so the audit tolerates the standing global
+// entry instead of treating it as unexplained policy drift.
+export const toleratedGlobalAllows = ["api.github.com:443"];
+
 // An exact host:port destination, never a wildcard or CIDR.
 const exact = (resource: string) => /^[a-z0-9.-]+:\d+$/.test(resource);
 
@@ -170,6 +178,7 @@ export function auditPolicy(value: unknown, allowed: string[], sandbox?: string)
       rule.resources.some(
         (resource) =>
           !blocked(resource) &&
+          !toleratedGlobalAllows.includes(resource) &&
           (!covered(resource, allowed) ||
             rule.actions.some((action) => action !== "net:connect:tcp")),
       )

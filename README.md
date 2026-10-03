@@ -85,22 +85,26 @@ Use a **dedicated sbx setup** with default-deny network policy, no registered MC
 
 ```sh
 sbx policy init deny-all
+sbx policy allow network api.github.com
+sbx policy allow network docs.docker.com
 sbx settings set ssh.agentForwardingEnabled false
 sbx daemon restart
 ```
 
 This sets global policy, not a per-project setting — don't blindly reset policies other sandboxes rely on. On an existing installation, inspect `sbx policy ls --type network --wide` and build a compatible setup with Docker's policy controls.
 
+The two `policy allow` lines above pre-approve the GitHub API and Docker's own sandbox docs globally, ahead of anything the launcher computes per launch; `auditPolicy` (`scripts/lib/network.ts`) tolerates the standing `api.github.com` entry specifically (`toleratedGlobalAllows`) rather than treating it as unexplained drift. This project isn't trying to be maximally paranoid about GitHub reachability — what actually gates risk is the token's own scope, not whether the host is reachable, so a standing allow is a sensible trade for not having to re-approve it per sandbox.
+
 The launcher adds sandbox-scoped TCP/443 allowances from [config/network-policy.json](config/network-policy.json):
 
 - **Model/auth hosts** (`agents`), per agent — deliberately small; add exact domains only when a flow requires them.
-- **Other hosts** (`hosts`, every agent): `docs.aws.amazon.com`.
-- **GitHub API** (`github`): `api.github.com`, added only when a `github` secret is stored (`sbx secret set github -t <token>`); otherwise GitHub stays unreachable. This is opt-in and user-controlled, same spirit as the restricted AWS role: scope the token yourself (a fine-grained, read-only PAT works well) to whatever reads you want an agent to have — issues, pull requests, commit/merge history, etc. Only the API host is allowed, not `github.com` itself, so this does not enable `git clone`/`push` over HTTPS; use the mounted project's existing local git history for that. The launcher re-checks for the secret on every launch and resume, so removing it (`sbx secret rm github`) revokes access on the next resume.
+- **Other hosts** (`hosts`, every agent): `docs.aws.amazon.com`, `docs.docker.com`.
+- **GitHub API** (`github`): `api.github.com`. Reachability comes from the global allow above (every sandbox under this setup can reach it); a stored `github` secret (`sbx secret set github -t <token>`) is what actually authenticates requests to it, and stays opt-in and user-controlled, same spirit as the restricted AWS role — scope the token yourself (a fine-grained, read-only PAT works well) to whatever reads you want an agent to have: issues, pull requests, commit/merge history, etc. Without a secret, requests reach the API unauthenticated. Only the API host is allowed, not `github.com` itself, so this does not enable `git clone`/`push` over HTTPS; use the mounted project's existing local git history for that. The launcher still re-checks for the secret on every launch and resume and hands that state to the sandbox, so removing it (`sbx secret rm github`) revokes authenticated access on the next resume even though the host stays reachable. The launcher re-checks for the secret on every launch and resume, so removing it (`sbx secret rm github`) revokes access on the next resume.
 - **AWS domains** (`awsDomains`, per partition): `**.amazonaws.com` and `**.api.aws` (`**.amazonaws.com.cn` in China) — every AWS service API in every region plus global endpoints (S3, CloudWatch Logs, Route 53, ACM, Organizations, Cost Explorer, pricing API).
 
 Built-in kits also grant exact download/package endpoints; the launcher adds matching denies for those outside the list. Only the configured wildcards are accepted — any other inherited wildcard (like `**`) is rejected. After applying rules, the launcher reads the policy back and probes a host beneath each wildcard, each exact host, lookalike domains (`amazonaws.com.example.com`), private/metadata addresses, and an in-VM proxy denial before handing over credentials — there is no skip-policy fallback. Host-wide policy/SSH changes affect other sessions, hence the dedicated setup.
 
-**`**.amazonaws.com` is a deliberate trade-off.** Besides AWS APIs, it admits hosts any AWS customer controls — EC2 public DNS, load balancers, API Gateway, S3 buckets, RDS/OpenSearch endpoints — so an agent could send data it reads to a server someone else runs on AWS. The restricted, read-only, short-lived role is the main control; the allowlist doesn't prevent exfiltration within AWS. Replace `awsDomains` wildcards with exact hosts if that matters for your use. Organizations data is only readable from the management or a delegated administrator account. Package registries, `git clone`/`push` over HTTPS, and LAN destinations aren't enabled — install needed dependencies in a reviewed template. The GitHub API is reachable only when you opt in with a stored `github` secret.
+**`**.amazonaws.com` is a deliberate trade-off.** Besides AWS APIs, it admits hosts any AWS customer controls — EC2 public DNS, load balancers, API Gateway, S3 buckets, RDS/OpenSearch endpoints — so an agent could send data it reads to a server someone else runs on AWS. The restricted, read-only, short-lived role is the main control; the allowlist doesn't prevent exfiltration within AWS. Replace `awsDomains` wildcards with exact hosts if that matters for your use. Organizations data is only readable from the management or a delegated administrator account. Package registries, `git clone`/`push` over HTTPS, and LAN destinations aren't enabled — install needed dependencies in a reviewed template. The GitHub API is reachable from every sandbox under this setup; a stored `github` secret is what authenticates requests to it, not what makes it reachable.
 
 Resume applies the current list to an existing sandbox before checking it, so allowlist changes take effect on the next resume.
 
