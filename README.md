@@ -93,8 +93,6 @@ sbx daemon restart
 
 This sets global policy, not a per-project setting — don't blindly reset policies other sandboxes rely on. On an existing installation, inspect `sbx policy ls --type network --wide` and build a compatible setup with Docker's policy controls.
 
-The two `policy allow` lines above pre-approve the GitHub API and Docker's own sandbox docs globally, ahead of anything the launcher computes per launch; `auditPolicy` (`scripts/lib/network.ts`) tolerates the standing `api.github.com` entry specifically (`toleratedGlobalAllows`) rather than treating it as unexplained drift. This project isn't trying to be maximally paranoid about GitHub reachability — what actually gates risk is the token's own scope, not whether the host is reachable, so a standing allow is a sensible trade for not having to re-approve it per sandbox.
-
 The launcher adds sandbox-scoped TCP/443 allowances from [config/network-policy.json](config/network-policy.json):
 
 - **Model/auth hosts** (`agents`), per agent — deliberately small; add exact domains only when a flow requires them.
