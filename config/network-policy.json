@@ -9,7 +9,7 @@
     ],
     "codex": ["api.openai.com", "auth.openai.com", "chatgpt.com"]
   },
-  "hosts": ["docs.aws.amazon.com", "docs.docker.com"],
+  "hosts": ["docs.aws.amazon.com", "docs.docker.com", "mise.jdx.dev"],
   "awsDomains": {
     "aws": ["**.amazonaws.com", "**.api.aws"],
     "aws-us-gov": ["**.amazonaws.com", "**.api.aws"],
