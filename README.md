@@ -7,6 +7,7 @@ aws login --profile browser-login
 mise run sbx run <agent> --profile profile
 mise run sbx run <agent> /path/to/project --profile profile # mounts the local directory for host edits
 mise run sbx run <agent> /path/to/project                   # same template, no AWS session
+mise run sbx run <agent> --name my-box --profile profile    # choose the sandbox name
 
 # reattaching
 mise run sbx run --name <name>
@@ -105,18 +106,20 @@ Resume applies the current list to an existing sandbox before checking it, so al
 
 ## Workspace and lifecycle
 
-**Empty mode is the default.** Without a path, the agent starts in an empty workspace with no host files transferred — suited to AWS investigation that needs no source code. Files created there persist across resume but are lost when the sandbox is destroyed. The current directory is never used implicitly; a relative path is resolved from the directory you ran mise in.
+**Empty mode is the default.** Without a path, the agent starts in an empty workspace with no host files transferred — suited to AWS investigation that needs no source code. Files created there persist across resume but are lost when the sandbox is destroyed. The current directory is never mounted implicitly (it only supplies the default name); a relative path is resolved from the directory you ran mise in.
 
 **Project mode** is selected by passing a path after the agent, mounting that directory for host edits — the agent can read and change files there immediately, including uncommitted and ignored ones. Don't choose a directory containing credentials or private keys; host home and its ancestors are rejected as project roots.
 
-Each launch prints its unique name and credential expiry. The sandbox is retained after the agent exits:
+Like sbx, a sandbox is named `<agent>-<directory>` after the project directory, or after the current directory in empty mode (lowercased, with other characters replaced by hyphens); `--name` chooses any other lowercase name. Running the same launch again reattaches to that sandbox, but only if the agent, path and AWS profile, role and region all match — otherwise it is refused, so pick another `--name` or remove the old sandbox. A name already used by a sandbox this launcher didn't create is refused too.
+
+Each launch prints its name and credential expiry. The sandbox is retained after the agent exits:
 
 ```sh
 mise run sbx run --name <name>  # reattach
 mise run sbx rm <name>
 ```
 
-Resume reattaches to a ready session, first repeating the host checks (sbx version/settings, stored secrets, network policy). If less than 15 minutes of the one-hour AWS session remain, it reassumes the restricted role on the host and hands the new session to the sandbox; new shells then use it. This needs a valid upstream `aws login` and only happens on resume, not while an agent is running. `mise run sbx run --name <name>` reattaches from anywhere — `--name` is recognized regardless of position, so `mise run sbx run <agent> --name <name>` also reattaches, with `<agent>` only confirming a match (a mismatch is rejected). The same command without mise skips the checks and never renews credentials. An unrecognized `--name` is passed straight through to `sbx`.
+Resume reattaches to a ready session, first repeating the host checks (sbx version/settings, stored secrets, network policy). If less than 15 minutes of the one-hour AWS session remain, it reassumes the restricted role on the host and hands the new session to the sandbox; new shells then use it. This needs a valid upstream `aws login` and only happens on resume, not while an agent is running. `mise run sbx run --name <name>` reattaches from anywhere — `--name` is recognized regardless of position, so `mise run sbx run <agent> --name <name>` also reattaches, with `<agent>` only confirming a match (a mismatch is rejected). The same command without mise skips the checks and never renews credentials. A sandbox is managed when the launcher holds live session metadata for it, whatever its name; a bare `--name` for any other sandbox is passed straight through to `sbx`.
 
 Destroy stops the active session and removes the sandbox. Mounted project files remain on the host; files created only in an empty sandbox are lost. Failed launches are stopped and retained for inspection. Only recorded launcher sessions can be destroyed through these tasks.
 

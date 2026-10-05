@@ -14,7 +14,7 @@ import {
   sbxUpgradeHint,
   unexpectedSecrets,
 } from "../scripts/lib/sandbox.ts";
-import { loadState, saveState } from "../scripts/lib/state.ts";
+import { defaultName, loadState, saveState } from "../scripts/lib/state.ts";
 
 const { minSbxVersion } = (await configuration()).runtime;
 
@@ -43,6 +43,7 @@ async function fixture(
       forwarding: boolean;
       mcpServers: number;
       allowExample: boolean;
+      otherSandboxes: string[];
       secrets: { scope: string; type: string; name: string }[];
     };
   }) => Promise<void>,
@@ -60,9 +61,11 @@ async function fixture(
       forwarding: false,
       mcpServers: 0,
       allowExample: false,
+      otherSandboxes: [] as string[],
       secrets: [] as { scope: string; type: string; name: string }[],
     };
   let name = "",
+    agent = "",
     mounted = false,
     identity = {};
   // Sandbox-scoped allows the launcher has added, as sbx would record them.
@@ -110,12 +113,20 @@ async function fixture(
       else {
         name = args[args.indexOf("--name") + 1];
         mounted = args.includes(project);
+        agent = args.at(mounted ? -2 : -1)!;
       }
-    } else if (args[0] === "ls") result = { sandboxes: name ? [{ name, status: "stopped" }] : [] };
+    } else if (args[0] === "rm") name = "";
+    else if (args[0] === "ls")
+      result = {
+        sandboxes: [...(name ? [name] : []), ...control.otherSandboxes].map((n) => ({
+          name: n,
+          status: "stopped",
+        })),
+      };
     else if (args[0] === "inspect")
       result = {
         name,
-        agent: "claude",
+        agent,
         runtime_mounts: [],
         workspace: mounted ? "/home/agent/workspace" : undefined,
       };
@@ -339,6 +350,53 @@ test("resume checks an explicitly confirmed agent against the sandbox's own", as
     const name = await launch(target, { agent: "claude" }, run);
     await resume(name, run, "claude");
     await assert.rejects(resume(name, run, "codex"), /is a claude sandbox, not codex/);
+  }));
+test("names default to <agent>-<directory> and --name overrides them", async () =>
+  fixture(async ({ project, run, calls }) => {
+    const name = await launch(target, { agent: "claude", project }, run);
+    assert.equal(name, defaultName("claude", project));
+    assert.match(name, /^claude-readonly-lifecycle-[a-z0-9]+$/);
+    const chosen = await launch(undefined, { agent: "codex", name: "my-box" }, run);
+    assert.equal(chosen, "my-box");
+    assert.equal(calls.filter((c) => c.args[0] === "create").at(-1)!.args[2], "my-box");
+    await assert.rejects(launch(undefined, { agent: "codex", name: "../x" }, run), /lowercase/);
+  }));
+test("default names are slugged sandbox names", () => {
+  assert.equal(defaultName("claude", "/home/me/My_Project.v2"), "claude-my-project-v2");
+  assert.equal(defaultName("codex", "/"), "codex");
+  assert.equal(defaultName("codex", "/--x--"), "codex-x");
+  const long = defaultName("claude", `/${"a".repeat(100)}-`);
+  assert.equal(long.length, 63);
+});
+test("launching an existing managed sandbox reattaches only when nothing would change", async () =>
+  fixture(async ({ project, run, calls }) => {
+    const name = await launch(target, { agent: "claude", project }, run);
+    const creates = () => calls.filter((c) => c.args[0] === "create").length;
+    const attaches = () => calls.filter((c) => c.args[0] === "run").length;
+    assert.equal(await launch(target, { agent: "claude", project }, run), name);
+    assert.equal(creates(), 1);
+    assert.equal(attaches(), 2);
+    await assert.rejects(launch(target, { agent: "codex", project, name }, run), /different agent/);
+    await assert.rejects(launch(target, { agent: "claude", name }, run), /different workspace/);
+    await assert.rejects(launch(undefined, { agent: "claude", project }, run), /different AWS/);
+    await assert.rejects(
+      launch({ ...target, region: "eu-west-1" }, { agent: "claude", project }, run),
+      /different AWS/,
+    );
+    assert.equal(creates(), 1);
+    // Once destroyed, the name is free again.
+    await destroy(name, run);
+    await launch(undefined, { agent: "claude", project }, run);
+    assert.equal(creates(), 2);
+  }));
+test("a sandbox name taken by an unmanaged sandbox is refused before creation", async () =>
+  fixture(async ({ run, calls, control }) => {
+    control.otherSandboxes = ["theirs"];
+    await assert.rejects(
+      launch(target, { agent: "claude", name: "theirs" }, run),
+      /not managed by this launcher/,
+    );
+    assert.ok(!calls.some((c) => c.args[0] === "create" || c.args[1] === "assume-role"));
   }));
 test("only non-model secrets are reported", () => {
   const service = (name: string) => ({ scope: "global", type: "service", name });

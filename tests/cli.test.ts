@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -56,12 +56,22 @@ test("preview works with empty PATH and never executes credential_process", asyn
     await rm(dir, { recursive: true });
   }
 });
-// A fake sbx that exits 7 shows whether a command was handed to sbx.
+// A fake sbx that exits 7 shows whether a command was handed to sbx. The state
+// directory holds one ready managed sandbox and one destroyed one.
 async function withFakeSbx(fn: (env: NodeJS.ProcessEnv) => void): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "readonly-sbx-"));
   try {
     await writeFile(join(dir, "sbx"), "#!/bin/sh\nexit 7\n", { mode: 0o755 });
-    fn({ ...process.env, PATH: dir });
+    await mkdir(join(dir, "state", "sessions"), { recursive: true });
+    for (const [name, phase] of [
+      ["managed-box", "ready"],
+      ["old-box", "destroyed"],
+    ])
+      await writeFile(
+        join(dir, "state", "sessions", `${name}.json`),
+        JSON.stringify({ version: 2, name, agent: "claude", phase, createdAt: "" }),
+      );
+    fn({ ...process.env, PATH: dir, READONLY_SANDBOX_STATE_DIR: join(dir, "state") });
   } finally {
     await rm(dir, { recursive: true });
   }
@@ -80,9 +90,10 @@ test("CLI rejects unsupported options and malformed commands", posixOnly, () =>
       ["sbx", "run", "claude", "/a", "/b", "--profile", "demo"],
       ["sbx", "run", "claude", "/a", "--role", "OtherRole"],
       ["sbx", "run", "claude", "--network", "strict"],
-      ["sbx", "run", "--name", "ro-claude-0123456789ab", "codex", "extra"],
-      ["sbx", "run", "--name", "ro-claude-0123456789ab", "unknown-agent"],
-      ["sbx", "rm", "ro-claude-0123456789ab", "other"],
+      ["sbx", "run", "claude", "--name", "Not_Valid"],
+      ["sbx", "run", "claude", "--name"],
+      ["sbx", "run", "--name", "managed-box", "unknown-agent"],
+      ["sbx", "rm", "managed-box", "other"],
       ["build", "claude", "extra"],
       ["build"],
       ["doctor", "demo"],
@@ -93,24 +104,40 @@ test("CLI rejects unsupported options and malformed commands", posixOnly, () =>
   }),
 );
 
-// --name is recognized wherever it appears in the args, and whether or not it
-// names a sandbox this launcher manages; only the latter changes what happens.
+test("preview reports the default or chosen sandbox name", () => {
+  const preview = (...args: string[]) =>
+    JSON.parse(
+      spawnSync(process.execPath, ["scripts/sandbox.ts", "preview", ...args], {
+        encoding: "utf8",
+        env: { ...process.env, MISE_ORIGINAL_CWD: "/work/My Project" },
+      }).stdout,
+    ).name;
+  assert.equal(preview("claude"), "claude-my-project");
+  assert.equal(preview("codex", "/elsewhere/api_v2"), "codex-api-v2");
+  assert.equal(preview("claude", "--name", "mine"), "mine");
+});
+
+// --name is recognized wherever it appears in the args. A managed sandbox (one
+// with live launcher state) is reattached; with an agent, any other name is
+// launched through the launcher; otherwise sbx handles it.
 test(
-  "--name is recognized regardless of position, but only a managed name is intercepted",
+  "--name reattaches managed sandboxes, names launches, and otherwise passes through",
   posixOnly,
   () =>
     withFakeSbx((env) => {
       // Intercepted: fails on the host check (no real aws/sbx here), not sbx's exit 7.
       for (const args of [
-        ["run", "--name", "ro-claude-0123456789ab"],
-        ["run", "--name", "ro-claude-0123456789ab", "claude"],
-        ["run", "claude", "--name", "ro-claude-0123456789ab"],
-        ["run", "--name=ro-claude-0123456789ab", "claude"],
+        ["run", "--name", "managed-box"],
+        ["run", "--name", "managed-box", "claude"],
+        ["run", "claude", "--name", "managed-box"],
+        ["run", "--name=managed-box", "claude"],
+        ["run", "claude", "--name", "new-box"],
+        ["run", "codex", "--name=old-box"],
       ])
         assert.equal(cli(["sbx", ...args], env), 1, args.join(" "));
       for (const args of [
         ["run", "--name", "someone-else"],
-        ["run", "claude", "--name", "someone-else"],
+        ["run", "--name", "old-box"],
       ])
         assert.equal(cli(["sbx", ...args], env), 7, args.join(" "));
     }),
@@ -122,6 +149,7 @@ test("unmanaged sbx commands pass through to sbx unchanged", posixOnly, () =>
       ["ls", "--json"],
       ["run", "--name", "someone-else"],
       ["rm", "other"],
+      ["rm", "old-box"],
     ])
       assert.equal(cli(["sbx", ...args], env), 7, args.join(" "));
   }),

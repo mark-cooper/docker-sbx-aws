@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -10,7 +9,14 @@ import type { Runner, RunOptions } from "./process.ts";
 import { run as execute, hostEnvironment, json, successful } from "./process.ts";
 import type { Target } from "./profiles.ts";
 import type { State } from "./state.ts";
-import { loadState, saveState, withTemp } from "./state.ts";
+import {
+  defaultName,
+  loadState,
+  managedState,
+  saveState,
+  validateName,
+  withTemp,
+} from "./state.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const bootstrap = "/opt/readonly-sandbox/bootstrap.ts";
@@ -21,6 +27,8 @@ export interface Runtime {
 export interface LaunchOptions {
   agent: string;
   project?: string;
+  // Defaults to <agent>-<project directory name>, or the current directory's name.
+  name?: string;
 }
 interface Inspection {
   name: string;
@@ -257,12 +265,8 @@ export async function launch(
   options: LaunchOptions,
   run: Runner = execute,
 ): Promise<string> {
-  const { runtime, network } = await configuration();
-  const allowed = destinations(network, options.agent, target);
-  const grants = await prerequisites(run, runtime, !!target);
-  auditPolicy(await listPolicy(run)); // Fail before creating resources or minting credentials.
   // Without a project path the sandbox starts from an empty workspace; the
-  // current directory is never used implicitly.
+  // current directory is never used implicitly (only for the default name).
   const project =
     options.project === undefined ? undefined : await realpath(resolve(options.project));
   if (project) {
@@ -271,7 +275,28 @@ export async function launch(
     if (!homeFromProject || (!homeFromProject.startsWith("..") && !isAbsolute(homeFromProject)))
       throw new Error("The project must not be the host home or an ancestor of it.");
   }
-  const name = `ro-${options.agent}-${randomBytes(6).toString("hex")}`;
+  const name = options.name ?? defaultName(options.agent, project ?? process.cwd());
+  validateName(name);
+  // Launching an existing managed sandbox again reattaches to it, as sbx run
+  // does, but only when nothing about it would change.
+  const existing = await managedState(name);
+  if (existing) {
+    const mismatch = launchMismatch(existing, options.agent, project, target);
+    if (mismatch)
+      throw new Error(
+        `${name} already exists with a different ${mismatch}. Reattach with mise run sbx run --name ${name}, choose another --name, or remove it first.`,
+      );
+    await resume(name, run);
+    return name;
+  }
+  const { runtime, network } = await configuration();
+  const allowed = destinations(network, options.agent, target);
+  const grants = await prerequisites(run, runtime, !!target);
+  auditPolicy(await listPolicy(run)); // Fail before creating resources or minting credentials.
+  if (await exists(run, name))
+    throw new Error(
+      `A sandbox named ${name} already exists but is not managed by this launcher; choose another --name.`,
+    );
   const state: State = {
     version: 2,
     name,
@@ -348,6 +373,19 @@ export async function launch(
       `${error instanceof Error ? error.message : "Launch failed."}\nSession retained: ${name}. Use mise run sbx rm ${name} when no work needs recovery.`,
     );
   }
+}
+
+function launchMismatch(
+  state: State,
+  agent: string,
+  project: string | undefined,
+  target: Target | undefined,
+): string | undefined {
+  if (state.agent !== agent) return "agent";
+  if (state.project !== project) return "workspace";
+  const role = (t?: Target) => t && [t.profile, t.sourceProfile, t.roleArn, t.region].join("\n");
+  if (role(state.target) !== role(target)) return "AWS profile, role or region";
+  return undefined;
 }
 
 // Assume the restricted role on the host and hand the session to the sandbox,
