@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import type { Session } from "./aws.ts";
 import { assumeRestrictedRole, validateLifetime } from "./aws.ts";
 import type { Runtime } from "./config.ts";
 import { configuration, modelSecrets, root } from "./config.ts";
@@ -94,44 +95,60 @@ export function checkSbxVersion(output: string, minimum: string): void {
     );
 }
 
-// Host checks before any credential handoff. The developer's sbx setup is
-// left alone; features that hand the agent access beyond the AWS session are
-// returned so they can be reported.
-export async function prerequisites(run: Runner, runtime: Runtime, aws = true): Promise<string[]> {
-  if (aws) {
-    const output = await tool(run, "aws", ["--version"], "AWS CLI version check");
-    const version = /aws-cli\/2\.(\d+)\./.exec(output);
+// Host checks before any sandbox creation or credential handoff. The
+// developer's sbx setup is left alone; features that hand the agent access
+// beyond the AWS session are returned so they can be reported, along with the
+// existing sandbox names.
+async function hostChecks(
+  run: Runner,
+  runtime: Runtime,
+  aws: boolean,
+): Promise<{ grants: string[]; sandboxes: string[] }> {
+  // The commands are independent reads, so they run together. Their results
+  // are checked in order below, so an outdated sbx is reported as such rather
+  // than as a failure of a newer subcommand.
+  const host = (command: string, args: string[]) => run(command, args, { env: hostEnvironment() });
+  const [
+    awsVersion,
+    sbxVersion,
+    mcpList,
+    socketSetting,
+    forwardingSetting,
+    secretList,
+    policy,
+    list,
+  ] = await Promise.all([
+    aws ? host("aws", ["--version"]) : undefined,
+    host("sbx", ["version"]),
+    host("sbx", ["mcp", "ls", "--json"]),
+    host("sbx", ["settings", "get", "ssh.agentSocketPath"]),
+    host("sbx", ["settings", "get", "ssh.agentForwardingEnabled"]),
+    host("sbx", ["secret", "ls", "--json"]),
+    host("sbx", policyArgs()),
+    host("sbx", ["ls", "--json"]),
+  ]);
+  if (awsVersion) {
+    const version = /aws-cli\/2\.(\d+)\./.exec(successful(awsVersion, "AWS CLI version check"));
     if (!version || Number(version[1]) < 32)
       throw new Error("AWS CLI v2.32 or later is required for aws login.");
   }
-  checkSbxVersion(await sbx(run, ["version"], "sbx version check"), runtime.minSbxVersion);
+  checkSbxVersion(successful(sbxVersion, "sbx version check"), runtime.minSbxVersion);
   const grants: string[] = [];
-  const mcp = await sbxJson<{ servers: unknown[] }>(
-    run,
-    ["mcp", "ls", "--json"],
-    "MCP configuration check",
-  );
+  const mcp = json<{ servers: unknown[] }>(mcpList, "MCP configuration check");
   if (!Array.isArray(mcp.servers)) throw new Error("Unsupported sbx MCP JSON schema.");
   if (mcp.servers.length) grants.push(`${mcp.servers.length} registered sbx MCP server(s)`);
-  const socket = await sbx(
-    run,
-    ["settings", "get", "ssh.agentSocketPath"],
-    "SSH forwarding configuration check",
-  );
-  const forwarding = await sbx(
-    run,
-    ["settings", "get", "ssh.agentForwardingEnabled"],
-    "SSH forwarding safety check",
-  );
+  const socket = successful(socketSetting, "SSH forwarding configuration check");
+  const forwarding = successful(forwardingSetting, "SSH forwarding safety check");
   if (socket && socket !== '""') grants.push(`SSH agent forwarding from ${socket}`);
   else if (forwarding !== "false")
     grants.push("SSH agent forwarding (every key in your host agent)");
   const secrets = unexpectedSecrets(
-    await sbxJson<SecretList>(run, ["secret", "ls", "--json"], "sbx secret check"),
+    json<SecretList>(secretList, "sbx secret check"),
     modelSecrets(runtime),
   );
   if (secrets.length) grants.push(`stored sbx ${secrets.join(", ")}`);
-  return grants;
+  auditPolicy(json<unknown>(policy, "Network policy inspection"));
+  return { grants, sandboxes: sandboxNames(json(list, "Sandbox listing")) };
 }
 function reportGrants(grants: string[]): void {
   if (grants.length)
@@ -141,12 +158,16 @@ function reportGrants(grants: string[]): void {
 }
 
 // Global policy when name is omitted, otherwise the sandbox's effective policy.
-const listPolicy = (run: Runner, name?: string) =>
-  sbxJson<unknown>(
-    run,
-    ["policy", "ls", ...(name ? [name] : []), "--json", "--type", "network"],
-    "Network policy inspection",
-  );
+const policyArgs = (name?: string) => [
+  "policy",
+  "ls",
+  ...(name ? [name] : []),
+  "--json",
+  "--type",
+  "network",
+];
+const listPolicy = (run: Runner, name: string) =>
+  sbxJson<unknown>(run, policyArgs(name), "Network policy inspection");
 // Whether sbx would admit a destination for this sandbox.
 async function admitted(run: Runner, name: string, host: string): Promise<boolean> {
   // sbx exits 1 for a denied destination (still printing its decision), so
@@ -175,9 +196,9 @@ async function checkNetwork(run: Runner, name: string, allowed: string[]): Promi
     ...probes(allowed).map((host) => [host, true] as const),
     ...blockedProbes.map((host) => [host, false] as const),
   ];
-  for (const [host, allow] of expected)
-    if ((await admitted(run, name, host)) !== allow)
-      throw new Error("Effective network policy does not match the required allowlist.");
+  const results = await Promise.all(expected.map(([host]) => admitted(run, name, host)));
+  if (results.some((result, i) => result !== expected[i][1]))
+    throw new Error("Effective network policy does not match the required allowlist.");
 }
 // The in-VM probe needs a real proxy denial of example.com, so it runs only
 // when the developer's policy blocks it.
@@ -189,23 +210,25 @@ async function probeInside(run: Runner, name: string): Promise<void> {
 // policy. On resume this also adds hosts since added to the allowlist. The
 // result is audited and checked destination by destination either way.
 async function applyNetworkPolicy(run: Runner, name: string, allowed: string[]): Promise<void> {
-  for (const host of missingAllows(await listPolicy(run, name), allowed, name))
+  let policy = await listPolicy(run, name);
+  const missing = missingAllows(policy, allowed, name);
+  if (missing.length) {
     await sbx(
       run,
-      ["policy", "allow", "network", "--sandbox", name, host],
-      "Sandbox network allow rule",
+      ["policy", "allow", "network", "--sandbox", name, missing.join(",")],
+      "Sandbox network allow rules",
     );
-  auditPolicy(await listPolicy(run, name), name);
+    policy = await listPolicy(run, name);
+  }
+  auditPolicy(policy, name);
   await checkNetwork(run, name, allowed);
 }
-async function exists(run: Runner, name: string): Promise<boolean> {
-  const list = await sbxJson<{ sandboxes?: { name?: string }[] }>(
-    run,
-    ["ls", "--json"],
-    "Sandbox listing",
-  );
+function sandboxNames(list: { sandboxes?: { name?: string }[] }): string[] {
   if (!Array.isArray(list.sandboxes)) throw new Error("Unsupported sbx list JSON schema.");
-  return list.sandboxes.some((sandbox) => sandbox.name === name);
+  return list.sandboxes.map((sandbox) => sandbox.name ?? "");
+}
+async function exists(run: Runner, name: string): Promise<boolean> {
+  return sandboxNames(await sbxJson(run, ["ls", "--json"], "Sandbox listing")).includes(name);
 }
 function inside(
   run: Runner,
@@ -233,8 +256,7 @@ function inside(
 // Without a target only the host sbx checks run.
 export async function doctor(target: Target | undefined, run: Runner = execute): Promise<void> {
   const { runtime } = await configuration();
-  reportGrants(await prerequisites(run, runtime, !!target));
-  auditPolicy(await listPolicy(run));
+  reportGrants((await hostChecks(run, runtime, !!target)).grants);
   if (!target) {
     console.log("Host checks passed (no AWS profile given; role assumption not checked).");
     return;
@@ -277,9 +299,9 @@ export async function launch(
   }
   const { runtime, network } = await configuration();
   const allowed = destinations(network, options.agent, target);
-  const grants = await prerequisites(run, runtime, !!target);
-  auditPolicy(await listPolicy(run)); // Fail before creating resources or minting credentials.
-  if (await exists(run, name))
+  // Fail before creating resources or minting credentials.
+  const { grants, sandboxes } = await hostChecks(run, runtime, !!target);
+  if (sandboxes.includes(name))
     throw new Error(
       `A sandbox named ${name} already exists but is not managed by this launcher; choose another --name.`,
     );
@@ -304,44 +326,24 @@ export async function launch(
   );
   reportGrants(grants);
   try {
-    await sbx(
-      run,
-      [
-        "create",
-        "--name",
+    // The role is assumed on the host while the sandbox is created and
+    // checked. Its credentials stay in this process until every sandbox check
+    // has passed; a sandbox failure is reported first.
+    const [prepared, assumed] = await Promise.allSettled([
+      prepareSandbox(
+        run,
         name,
-        "--skills",
-        "off",
-        "--static-mcp=",
-        "--pull",
-        "never",
-        "--template",
-        runtime.templates[options.agent].tag,
         options.agent,
-        ...(project ? [project] : []),
-      ],
-      "Sandbox creation (build the template first)",
-      { timeout: 600_000 },
-    );
-    const info = await sbxJson<Inspection>(run, ["inspect", name, "--json"], "Sandbox inspection");
-    if (
-      info.name !== name ||
-      info.agent !== options.agent ||
-      !Array.isArray(info.runtime_mounts) ||
-      info.runtime_mounts.length
-    )
-      throw new Error("Unexpected sandbox identity or runtime mounts.");
-    // Empty mode must not expose a host workspace.
-    if (!project && (info.workspace || (Array.isArray(info.workspaces) && info.workspaces.length)))
-      throw new Error("Empty sandbox unexpectedly exposes a host workspace.");
-    if (project && !info.workspace)
-      throw new Error("Project sandbox did not mount the selected directory.");
-    const checked = JSON.parse(await inside(run, name, "check")) as { cwd: string; home: string };
-    if (!checked.cwd?.startsWith("/") || checked.home !== "/home/agent")
-      throw new Error("Unexpected template working directory or user.");
-    await applyNetworkPolicy(run, name, allowed);
-    await probeInside(run, name);
-    if (target) state.expiresAt = await handOffSession(run, name, target, runtime);
+        project,
+        runtime.templates[options.agent].tag,
+        allowed,
+      ),
+      target && assumeRestrictedRole(target, run, runtime.sessionDurationSeconds),
+    ]);
+    if (prepared.status === "rejected") throw prepared.reason;
+    if (assumed.status === "rejected") throw assumed.reason;
+    if (target && assumed.value)
+      state.expiresAt = await handOffSession(run, name, target, assumed.value);
     state.phase = "ready";
     await saveState(state);
     console.log(
@@ -361,6 +363,54 @@ export async function launch(
   }
 }
 
+// Create the sandbox and check it, and its network policy, before any handoff.
+async function prepareSandbox(
+  run: Runner,
+  name: string,
+  agent: string,
+  project: string | undefined,
+  template: string,
+  allowed: string[],
+): Promise<void> {
+  await sbx(
+    run,
+    [
+      "create",
+      "--name",
+      name,
+      "--skills",
+      "off",
+      "--static-mcp=",
+      "--pull",
+      "never",
+      "--template",
+      template,
+      agent,
+      ...(project ? [project] : []),
+    ],
+    "Sandbox creation (build the template first)",
+    { timeout: 600_000 },
+  );
+  const info = await sbxJson<Inspection>(run, ["inspect", name, "--json"], "Sandbox inspection");
+  if (
+    info.name !== name ||
+    info.agent !== agent ||
+    !Array.isArray(info.runtime_mounts) ||
+    info.runtime_mounts.length
+  )
+    throw new Error("Unexpected sandbox identity or runtime mounts.");
+  // Empty mode must not expose a host workspace.
+  if (!project && (info.workspace || (Array.isArray(info.workspaces) && info.workspaces.length)))
+    throw new Error("Empty sandbox unexpectedly exposes a host workspace.");
+  if (project && !info.workspace)
+    throw new Error("Project sandbox did not mount the selected directory.");
+  const checked = JSON.parse(await inside(run, name, "check")) as { cwd: string; home: string };
+  if (!checked.cwd?.startsWith("/") || checked.home !== "/home/agent")
+    throw new Error("Unexpected template working directory or user.");
+  await applyNetworkPolicy(run, name, allowed);
+  await probeInside(run, name);
+}
+
 function launchMismatch(
   state: State,
   agent: string,
@@ -374,15 +424,14 @@ function launchMismatch(
   return undefined;
 }
 
-// Assume the restricted role on the host and hand the session to the sandbox,
-// which verifies its identity before replacing any previous session.
+// Hand a restricted session assumed on the host to the sandbox, which verifies
+// its identity before replacing any previous session.
 async function handOffSession(
   run: Runner,
   name: string,
   target: Target,
-  runtime: Runtime,
+  session: Session,
 ): Promise<string> {
-  const session = await assumeRestrictedRole(target, run, runtime.sessionDurationSeconds);
   validateLifetime(session.credentials.Expiration);
   // Secrets travel on stdin, never as arguments or through a host file.
   await inside(run, name, "inject", {
@@ -423,9 +472,9 @@ export async function resume(
   // every host-side check that guards a credential handoff.
   const { runtime, network } = await configuration();
   const allowed = destinations(network, state.agent, state.target);
-  reportGrants(await prerequisites(run, runtime, !!state.target));
-  auditPolicy(await listPolicy(run));
-  if (!(await exists(run, name)))
+  const { grants, sandboxes } = await hostChecks(run, runtime, !!state.target);
+  reportGrants(grants);
+  if (!sandboxes.includes(name))
     throw new Error(
       "Sandbox not found in this sbx setup; check that you are using the setup it was launched from.",
     );
@@ -434,7 +483,8 @@ export async function resume(
   // Sessions this close to expiry are renewed before reattaching.
   if (state.target && !(remaining > runtime.renewWithinSeconds * 1000)) {
     console.log(`Renewing the restricted AWS session for ${name}.`);
-    state.expiresAt = await handOffSession(run, name, state.target, runtime);
+    const session = await assumeRestrictedRole(state.target, run, runtime.sessionDurationSeconds);
+    state.expiresAt = await handOffSession(run, name, state.target, session);
     await saveState(state);
   }
   console.log(

@@ -130,7 +130,8 @@ async function fixture(
         runtime_mounts: [],
         workspace: mounted ? "/home/agent/workspace" : undefined,
       };
-    else if (args[0] === "policy" && args[1] === "allow") sandboxAllows.add(args.at(-1)!);
+    else if (args[0] === "policy" && args[1] === "allow")
+      for (const resource of args.at(-1)!.split(",")) sandboxAllows.add(resource);
     else if (args[0] === "policy" && args[1] === "ls")
       result = {
         rules: control.broadPolicy
@@ -202,10 +203,18 @@ test("launch orders checks before handoff, keeps secrets on stdin, and mounts th
     const inject = calls.find((c) => c.args.at(-1) === "inject")!;
     assert.equal(JSON.parse(inject.options.input!).credentials.SecretAccessKey, "EXAMPLE_SECRET");
     assert.ok(inject.args.includes("-i"));
+    // The role is assumed while the sandbox is prepared, but its credentials
+    // reach the sandbox only after every sandbox check.
+    assert.ok(
+      calls.findIndex((c) => c.args[1] === "assume-role") <
+        calls.findIndex((c) => c.args.at(-1) === "probe-network"),
+    );
     assert.ok(
       calls.findIndex((c) => c.args.at(-1) === "probe-network") <
-        calls.findIndex((c) => c.args[1] === "assume-role"),
+        calls.findIndex((c) => c.args.at(-1) === "inject"),
     );
+    // The allowlist is added in one call.
+    assert.equal(calls.filter((c) => c.args[1] === "allow").length, 1);
     assert.ok(
       calls.findIndex((c) => c.args.at(-1) === "inject") <
         calls.findIndex((c) => c.args[0] === "run"),
@@ -278,6 +287,13 @@ test("legacy clone sessions cannot be destroyed by the new launcher", async () =
     await assert.rejects(destroy(name, run), /Legacy sandbox session/);
     assert.ok(!calls.some((c) => c.args[0] === "rm"));
   }));
+test("a sandbox failure is reported over a concurrent role assumption failure", async () =>
+  fixture(async ({ project, run, calls, control }) => {
+    control.createFails = true;
+    control.denyAws = true;
+    await assert.rejects(launch(target, { agent: "claude", project }, run), /Sandbox creation/);
+    assert.ok(!calls.some((c) => c.args.at(-1) === "inject"));
+  }));
 test("a launch that fails during creation can still be destroyed", async () =>
   fixture(async ({ project, run, calls, control }) => {
     control.createFails = true;
@@ -343,7 +359,9 @@ test("without a target the sandbox gets no AWS session, AWS domains or AWS CLI c
     const name = await launch(undefined, { agent: "claude" }, run);
     assert.ok(!calls.some((c) => c.tool === "aws"));
     assert.ok(!calls.some((c) => c.args.includes("inject")));
-    const allows = calls.filter((c) => c.args[1] === "allow").map((c) => c.args.at(-1));
+    const allows = calls
+      .filter((c) => c.args[1] === "allow")
+      .flatMap((c) => c.args.at(-1)!.split(","));
     assert.ok(allows.includes("api.anthropic.com:443"));
     assert.ok(!allows.some((host) => host?.includes("amazonaws")));
     const state = await loadState(name);
