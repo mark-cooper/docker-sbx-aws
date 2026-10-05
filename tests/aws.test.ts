@@ -61,10 +61,11 @@ test("only immediate source is authenticated; issued session is independently ve
     else result = identity;
     return { stdout: JSON.stringify(result), stderr: "", code: 0 };
   };
-  const session = await assumeRestrictedRole(target, run, env);
+  const session = await assumeRestrictedRole(target, run, 1800, env);
   assert.equal(calls.length, 3);
   assert.equal(calls[1].args[calls[1].args.indexOf("--profile") + 1], "auth-source");
   assert.equal(calls[1].args[calls[1].args.indexOf("--role-arn") + 1], target.roleArn);
+  assert.equal(calls[1].args[calls[1].args.indexOf("--duration-seconds") + 1], "1800");
   assert.equal(calls[0].options.env!.AWS_ACCESS_KEY_ID, undefined);
   assert.equal(calls[0].options.env!.AWS_ENDPOINT_URL, undefined);
   assert.equal(calls[2].options.env!.AWS_ACCESS_KEY_ID, "ASIA_EXAMPLE_ONLY");
@@ -86,7 +87,7 @@ test("denied assumption never falls back or repeats secret-bearing subprocess ou
           stderr: "",
         };
   };
-  await assert.rejects(assumeRestrictedRole(target, run, env), (error) => {
+  await assert.rejects(assumeRestrictedRole(target, run, 3600, env), (error) => {
     assert.match(String(error), /Direct restricted-role assumption/);
     assert.match(String(error), /browser-login/);
     assert.doesNotMatch(String(error), /EXAMPLE_SECRET|HOST_KEY_MUST_NOT_LEAK/);
@@ -111,7 +112,7 @@ test("identity mismatch prevents using returned credentials", async () => {
         : { Account: "111111111111", Arn: "source", UserId: "source-id" },
     ),
   });
-  await assert.rejects(assumeRestrictedRole(target, run, env), /unexpected role identity/);
+  await assert.rejects(assumeRestrictedRole(target, run, 3600, env), /unexpected role identity/);
 });
 test("expiry rejects malformed, expired and nearly expired sessions", () => {
   for (const expiry of [

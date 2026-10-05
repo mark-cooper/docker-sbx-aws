@@ -3,11 +3,11 @@ import { mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { configuration } from "../scripts/lib/config.ts";
 import type { Runner, RunOptions } from "../scripts/lib/process.ts";
 import type { Target } from "../scripts/lib/profiles.ts";
 import {
   checkSbxVersion,
-  configuration,
   destroy,
   launch,
   resume,
@@ -16,7 +16,7 @@ import {
 } from "../scripts/lib/sandbox.ts";
 import { defaultName, loadState, saveState } from "../scripts/lib/state.ts";
 
-const { minSbxVersion } = (await configuration()).runtime;
+const { minSbxVersion, renewWithinSeconds } = (await configuration()).runtime;
 
 const target: Target = {
   profile: "demo-project",
@@ -314,18 +314,26 @@ test("resume repeats host checks, renews only near expiry, and refuses failed la
     assert.ok(calls.slice(before).some((c) => c.args[1] === "check"));
     // The sandbox already matches the allowlist, so no rules are re-added.
     assert.ok(!calls.slice(before).some((c) => c.args[1] === "allow" || c.args[1] === "deny"));
-    // An expired session (or one launched before expiry was recorded) is renewed.
+    // The configured renewal window decides whether a live session is renewed.
     const state = await loadState(name);
-    await saveState({ ...state, expiresAt: undefined });
+    const expiresIn = (seconds: number) => new Date(Date.now() + seconds * 1000).toISOString();
+    await saveState({ ...state, expiresAt: expiresIn(renewWithinSeconds + 60) });
+    await resume(name, run);
+    assert.equal(assumptions(), 1);
+    await saveState({ ...state, expiresAt: expiresIn(renewWithinSeconds - 60) });
     await resume(name, run);
     assert.equal(assumptions(), 2);
+    // An expired session (or one launched before expiry was recorded) is renewed.
+    await saveState({ ...state, expiresAt: undefined });
+    await resume(name, run);
+    assert.equal(assumptions(), 3);
     assert.ok(Date.parse((await loadState(name)).expiresAt!) > Date.now());
     const inject = calls.filter((c) => c.args.at(-1) === "inject").at(-1)!;
     assert.ok(!inject.args.join(" ").includes("EXAMPLE_SECRET"));
     // Host checks still gate a resume.
     control.broadPolicy = true;
     await assert.rejects(resume(name, run), /every destination/);
-    assert.equal(attaches(), 3);
+    assert.equal(attaches(), 5);
     control.broadPolicy = false;
     await saveState({ ...state, phase: "failed" });
     await assert.rejects(resume(name, run), /Only ready sessions/);
@@ -401,17 +409,24 @@ test("a sandbox name taken by an unmanaged sandbox is refused before creation", 
 test("only non-model secrets are reported", () => {
   const service = (name: string) => ({ scope: "global", type: "service", name });
   const list = (...names: string[]) => ({ secrets: names.map(service), custom_secrets: [] });
-  assert.deepEqual(unexpectedSecrets(list("anthropic", "openai")), []);
-  assert.deepEqual(unexpectedSecrets(list("anthropic", "github")), ['service secret "github"']);
+  const expected = ["anthropic", "openai"];
+  assert.deepEqual(unexpectedSecrets(list("anthropic", "openai"), expected), []);
+  assert.deepEqual(unexpectedSecrets(list("anthropic", "github"), expected), [
+    'service secret "github"',
+  ]);
   assert.deepEqual(
-    unexpectedSecrets({
-      secrets: [{ scope: "global", type: "registry", name: "ghcr.io" }],
-      custom_secrets: [],
-    }),
+    unexpectedSecrets(
+      {
+        secrets: [{ scope: "global", type: "registry", name: "ghcr.io" }],
+        custom_secrets: [],
+      },
+      expected,
+    ),
     [],
   );
-  assert.equal(unexpectedSecrets({ secrets: [], custom_secrets: [{}] }).length, 1);
-  assert.throws(() => unexpectedSecrets({}), /schema/);
+  assert.equal(unexpectedSecrets({ secrets: [], custom_secrets: [{}] }, expected).length, 1);
+  assert.throws(() => unexpectedSecrets({}, expected), /schema/);
+  assert.deepEqual(unexpectedSecrets(list("openai"), ["anthropic"]), ['service secret "openai"']);
 });
 test("sbx version is a minimum: equal and newer pass, older names an upgrade command", () => {
   for (const version of ["0.46.0", "0.46.1", "0.47.0", "0.100.0", "1.0.0"])

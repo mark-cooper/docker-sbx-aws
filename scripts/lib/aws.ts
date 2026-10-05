@@ -43,6 +43,7 @@ export function validateLifetime(expiration: string, now = Date.now()): void {
 export async function assumeRestrictedRole(
   target: Target,
   run: Runner,
+  durationSeconds: number,
   env = process.env,
 ): Promise<Session> {
   const hostEnv = awsEnvironment(env);
@@ -72,11 +73,11 @@ export async function assumeRestrictedRole(
         "--role-session-name",
         sessionName,
         "--duration-seconds",
-        "3600",
+        String(durationSeconds),
       ],
       { env: hostEnv },
     ),
-    `Direct restricted-role assumption. Check source permissions and target trust. ${hint}`,
+    `Direct restricted-role assumption. Check source permissions, target trust, and that ${durationSeconds}s is within the role's maximum session duration (one hour when chaining roles). ${hint}`,
   );
   const credentials = result.Credentials;
   if (

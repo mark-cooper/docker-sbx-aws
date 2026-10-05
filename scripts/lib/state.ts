@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { agents } from "./config.ts";
 import type { Target } from "./profiles.ts";
 
 export interface State {
@@ -25,7 +26,6 @@ export interface State {
   phase: "creating" | "ready" | "failed" | "destroyed";
   createdAt: string;
 }
-export const agents = ["claude", "codex"];
 export function stateRoot(): string {
   return resolve(
     process.env.READONLY_SANDBOX_STATE_DIR ?? join(homedir(), ".readonly-agent-sandbox"),
@@ -76,7 +76,7 @@ export async function loadState(name: string): Promise<State> {
   }
   if (version === 1)
     throw new Error("Legacy sandbox session: use the previous launcher to collect or destroy it.");
-  if (state.name !== name || state.version !== 2 || !agents.includes(state.agent))
+  if (state.name !== name || state.version !== 2 || !(await agents()).includes(state.agent))
     throw new Error("Invalid managed session metadata.");
   return state;
 }

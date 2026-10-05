@@ -1,12 +1,16 @@
 {
   "minSbxVersion": "0.46.0",
   "defaultRole": "ReadOnlyRole",
+  "sessionDurationSeconds": 3600,
+  "renewWithinSeconds": 900,
   "templates": {
     "claude": {
-      "tag": "readonly-agent-claude:0.2.0"
+      "tag": "readonly-agent-claude:0.2.0",
+      "modelSecret": "anthropic"
     },
     "codex": {
-      "tag": "readonly-agent-codex:0.2.0"
+      "tag": "readonly-agent-codex:0.2.0",
+      "modelSecret": "openai"
     }
   }
 }

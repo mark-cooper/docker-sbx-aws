@@ -42,7 +42,7 @@ Only the resulting access key, secret, session token, expiry, and region enter t
 - A source using a login session, a trusted `credential_process`, or an intermediate role via `source_profile`. Static credentials anywhere in this chain are rejected. Credential processes are trusted host code and are never executed by preview.
 - An existing restricted role (`defaultRole` in [config/runtime.json](config/runtime.json), or `--role`) whose effective permissions allow intended reads and deny writes, role escalation, and unwanted data reads (e.g. S3 object downloads) — AWS's generic read-only managed policy may allow more than you intend.
 - Direct access from the source identity to the restricted role: target trust and, for cross-account access, source permission to assume it. Access to the original account role does not imply this.
-- Not supported yet: inferring target accounts without `role_arn`, replacement-role MFA/external-ID/source-identity arguments, or refreshing credentials mid-session. Sessions request one hour; role chaining caps at one hour; relaunch after expiry.
+- Not supported yet: inferring target accounts without `role_arn`, replacement-role MFA/external-ID/source-identity arguments, or refreshing credentials mid-session. Sessions request `sessionDurationSeconds` from [config/runtime.json](config/runtime.json) (default one hour). Longer sessions need the restricted role's maximum session duration raised, and STS caps chained role sessions — an intermediate role, or a login session that is itself an assumed role — at one hour; relaunch or resume after expiry.
 
 ## Setup
 
@@ -61,8 +61,8 @@ Dependabot opens a PR when a newer upstream image is available, updating tag and
 ### Adding an agent
 
 1. Add `sandbox/Dockerfile.<agent>` starting `FROM` Docker's sandbox template for that agent, pinned by digest, followed by the same lines as the existing agent Dockerfiles (`tests/dockerfiles.test.ts` will fail if it diverges).
-2. Add its template tag to [config/runtime.json](config/runtime.json) and its model/auth hosts to [config/network-policy.json](config/network-policy.json).
-3. Add the agent name to `agents` in [scripts/lib/state.ts](scripts/lib/state.ts) and its model secret name, if any, to `modelSecrets` in [scripts/lib/sandbox.ts](scripts/lib/sandbox.ts).
+2. Add a template to [config/runtime.json](config/runtime.json) keyed by the agent name, with its `tag` and, if sbx manages a model secret for it, `modelSecret` (the sbx service secret name, e.g. `anthropic`). The template keys are the supported agents.
+3. Add its model/auth hosts to [config/network-policy.json](config/network-policy.json). `tests/config.test.ts` fails if templates, Dockerfiles and network hosts don't list the same agents.
 
 ### AWS profiles
 
@@ -119,7 +119,7 @@ mise run sbx run --name <name>  # reattach
 mise run sbx rm <name>
 ```
 
-Resume reattaches to a ready session, first repeating the host checks (sbx version/settings, stored secrets, network policy). If less than 15 minutes of the one-hour AWS session remain, it reassumes the restricted role on the host and hands the new session to the sandbox; new shells then use it. This needs a valid upstream `aws login` and only happens on resume, not while an agent is running. `mise run sbx run --name <name>` reattaches from anywhere — `--name` is recognized regardless of position, so `mise run sbx run <agent> --name <name>` also reattaches, with `<agent>` only confirming a match (a mismatch is rejected). The same command without mise skips the checks and never renews credentials. A sandbox is managed when the launcher holds live session metadata for it, whatever its name; a bare `--name` for any other sandbox is passed straight through to `sbx`.
+Resume reattaches to a ready session, first repeating the host checks (sbx version/settings, stored secrets, network policy). If less than `renewWithinSeconds` (default 15 minutes) of the AWS session remain, it reassumes the restricted role on the host and hands the new session to the sandbox; new shells then use it. This needs a valid upstream `aws login` and only happens on resume, not while an agent is running. `mise run sbx run --name <name>` reattaches from anywhere — `--name` is recognized regardless of position, so `mise run sbx run <agent> --name <name>` also reattaches, with `<agent>` only confirming a match (a mismatch is rejected). The same command without mise skips the checks and never renews credentials. A sandbox is managed when the launcher holds live session metadata for it, whatever its name; a bare `--name` for any other sandbox is passed straight through to `sbx`.
 
 Destroy stops the active session and removes the sandbox. Mounted project files remain on the host; files created only in an empty sandbox are lost. Failed launches are stopped and retained for inspection. Only recorded launcher sessions can be destroyed through these tasks.
 

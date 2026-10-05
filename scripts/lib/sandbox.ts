@@ -1,9 +1,9 @@
-import { readFile, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { assumeRestrictedRole, validateLifetime } from "./aws.ts";
-import type { NetworkConfig } from "./network.ts";
+import type { Runtime } from "./config.ts";
+import { configuration, modelSecrets, root } from "./config.ts";
 import { auditPolicy, blockedProbes, destinations, missingAllows, probes } from "./network.ts";
 import type { Runner, RunOptions } from "./process.ts";
 import { run as execute, hostEnvironment, json, successful } from "./process.ts";
@@ -18,14 +18,7 @@ import {
   withTemp,
 } from "./state.ts";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const bootstrap = "/opt/readonly-sandbox/bootstrap.ts";
-export interface Runtime {
-  minSbxVersion: string;
-  // Restricted role assumed when --role is not given.
-  defaultRole: string;
-  templates: Record<string, { tag: string }>;
-}
 export interface LaunchOptions {
   agent: string;
   project?: string;
@@ -57,30 +50,20 @@ async function sbxJson<T>(run: Runner, args: string[], operation: string): Promi
   return json<T>(await run("sbx", args, { env: hostEnvironment() }), operation);
 }
 
-export async function configuration(): Promise<{ runtime: Runtime; network: NetworkConfig }> {
-  const [runtime, network] = await Promise.all(
-    ["runtime", "network-policy"].map((name) =>
-      readFile(join(root, "config", `${name}.json`), "utf8"),
-    ),
-  );
-  return { runtime: JSON.parse(runtime), network: JSON.parse(network) };
-}
-// Model authentication stays managed by sbx; any other stored service secret
-// is injected into every sandbox and gives the agent access beyond the AWS
-// session, so it is reported at launch. Either model secret is expected for
-// either agent: the sbx proxy applies it only on that provider's hosts.
-const modelSecrets = ["anthropic", "openai"];
+// Any stored service secret other than a model secret (see modelSecrets) is
+// injected into every sandbox and gives the agent access beyond the AWS
+// session, so it is reported at launch.
 interface SecretList {
   secrets?: { scope?: string; type?: string; name?: string }[];
   custom_secrets?: unknown[];
 }
-export function unexpectedSecrets(list: SecretList): string[] {
+export function unexpectedSecrets(list: SecretList, expected: string[]): string[] {
   if (!Array.isArray(list.secrets) || !Array.isArray(list.custom_secrets))
     throw new Error("Unsupported sbx secret JSON schema.");
   const unexpected = list.secrets
     // Registry secrets stay on the host unless explicitly shared with sandboxes.
     .filter((secret) => secret.type !== "registry")
-    .filter((secret) => secret.type !== "service" || !modelSecrets.includes(secret.name ?? ""))
+    .filter((secret) => secret.type !== "service" || !expected.includes(secret.name ?? ""))
     .map((secret) => `${secret.type ?? "unknown"} secret ${JSON.stringify(secret.name ?? "")}`);
   if (list.custom_secrets.length) unexpected.push(`${list.custom_secrets.length} custom secret(s)`);
   return unexpected;
@@ -145,6 +128,7 @@ export async function prerequisites(run: Runner, runtime: Runtime, aws = true): 
     grants.push("SSH agent forwarding (every key in your host agent)");
   const secrets = unexpectedSecrets(
     await sbxJson<SecretList>(run, ["secret", "ls", "--json"], "sbx secret check"),
+    modelSecrets(runtime),
   );
   if (secrets.length) grants.push(`stored sbx ${secrets.join(", ")}`);
   return grants;
@@ -255,7 +239,7 @@ export async function doctor(target: Target | undefined, run: Runner = execute):
     console.log("Host checks passed (no AWS profile given; role assumption not checked).");
     return;
   }
-  const session = await assumeRestrictedRole(target, run);
+  const session = await assumeRestrictedRole(target, run, runtime.sessionDurationSeconds);
   console.log(
     `Direct assumption verified: ${session.identity.Arn}\nExpires: ${session.credentials.Expiration}\nHost checks passed. Sandbox mounts, template, effective policy and in-VM identity are checked during launch.`,
   );
@@ -357,7 +341,7 @@ export async function launch(
       throw new Error("Unexpected template working directory or user.");
     await applyNetworkPolicy(run, name, allowed);
     await probeInside(run, name);
-    if (target) state.expiresAt = await handOffSession(run, name, target);
+    if (target) state.expiresAt = await handOffSession(run, name, target, runtime);
     state.phase = "ready";
     await saveState(state);
     console.log(
@@ -392,8 +376,13 @@ function launchMismatch(
 
 // Assume the restricted role on the host and hand the session to the sandbox,
 // which verifies its identity before replacing any previous session.
-async function handOffSession(run: Runner, name: string, target: Target): Promise<string> {
-  const session = await assumeRestrictedRole(target, run);
+async function handOffSession(
+  run: Runner,
+  name: string,
+  target: Target,
+  runtime: Runtime,
+): Promise<string> {
+  const session = await assumeRestrictedRole(target, run, runtime.sessionDurationSeconds);
   validateLifetime(session.credentials.Expiration);
   // Secrets travel on stdin, never as arguments or through a host file.
   await inside(run, name, "inject", {
@@ -417,9 +406,6 @@ async function attach(run: Runner, name: string): Promise<void> {
       `Agent session exited with status ${agent.code}; sandbox work is preserved as ${name}.`,
     );
 }
-
-// Sessions this close to expiry are renewed before reattaching.
-const renewalWindow = 15 * 60_000;
 
 export async function resume(
   name: string,
@@ -445,9 +431,10 @@ export async function resume(
     );
   await applyNetworkPolicy(run, name, allowed);
   const remaining = Date.parse(state.expiresAt ?? "") - Date.now();
-  if (state.target && !(remaining > renewalWindow)) {
+  // Sessions this close to expiry are renewed before reattaching.
+  if (state.target && !(remaining > runtime.renewWithinSeconds * 1000)) {
     console.log(`Renewing the restricted AWS session for ${name}.`);
-    state.expiresAt = await handOffSession(run, name, state.target);
+    state.expiresAt = await handOffSession(run, name, state.target, runtime);
     await saveState(state);
   }
   console.log(

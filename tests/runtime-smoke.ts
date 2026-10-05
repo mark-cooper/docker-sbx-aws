@@ -5,8 +5,9 @@ import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { configuration } from "../scripts/lib/config.ts";
 import { hostEnvironment, run, successful } from "../scripts/lib/process.ts";
-import { checkSbxVersion, configuration } from "../scripts/lib/sandbox.ts";
+import { checkSbxVersion } from "../scripts/lib/sandbox.ts";
 
 const env = hostEnvironment();
 const dir = await mkdtemp(join(tmpdir(), "readonly-runtime-"));

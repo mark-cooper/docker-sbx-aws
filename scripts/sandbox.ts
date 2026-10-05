@@ -1,9 +1,10 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { configuration, agents as configuredAgents } from "./lib/config.ts";
 import { run as execute, hostEnvironment } from "./lib/process.ts";
 import { readProfiles, selectTarget } from "./lib/profiles.ts";
-import { buildTemplate, configuration, destroy, doctor, launch, resume } from "./lib/sandbox.ts";
-import { agents, defaultName, managedState } from "./lib/state.ts";
+import { buildTemplate, destroy, doctor, launch, resume } from "./lib/sandbox.ts";
+import { defaultName, managedState } from "./lib/state.ts";
 
 const help = `Usage:
   mise run sbx run <agent> [PATH] [--name NAME] [--profile NAME] [aws options]
@@ -14,7 +15,7 @@ const help = `Usage:
       with the same agent, PATH and AWS options, this reattaches to it.
   mise run sbx run --name <sandbox> [<agent>]
       Reattach to a managed sandbox from anywhere, renewing its AWS session when under
-      15 minutes remain. <agent> is optional and only confirms it matches the sandbox.
+      renewWithinSeconds (config/runtime.json) remain. <agent> is optional and only confirms it matches the sandbox.
   mise run sbx rm <sandbox>
       Stop and remove a managed sandbox.
   mise run sbx <any other sbx command>
@@ -83,6 +84,7 @@ async function launchArgs(args: string[]) {
     options: { ...awsOptions, name: { type: "string" } },
   });
   const [agent, project, ...extra] = positionals;
+  const agents = await configuredAgents();
   if (!agent || extra.length) throw new Error(`Expected <agent> and at most one PATH.\n${help}`);
   if (!agents.includes(agent))
     throw new Error(`Unsupported agent. Supported: ${agents.join(", ")}.`);
@@ -113,6 +115,7 @@ async function sbx(args: string[]): Promise<void> {
     return;
   }
   if (command === "run") {
+    const agents = await configuredAgents();
     // --name can appear anywhere, matching how sbx itself accepts it.
     const nameIndex = rest.findIndex((arg) => arg === "--name" || arg.startsWith("--name="));
     const flag = rest[nameIndex];
@@ -183,8 +186,7 @@ export async function main(args: string[]): Promise<void> {
   }
   if (command === "build") {
     if (rest.length === 1 && rest[0] === "--all") {
-      for (const agent of Object.keys((await configuration()).runtime.templates))
-        await buildTemplate(agent);
+      for (const agent of await configuredAgents()) await buildTemplate(agent);
       return;
     }
     if (rest.length !== 1 || rest[0].startsWith("-"))
