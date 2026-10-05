@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   auditPolicy,
-  blockedHosts,
-  blockedProbes,
+  denials,
+  deniedProbes,
   destinations,
+  metadataHosts,
   missingRules,
   probes,
 } from "../scripts/lib/network.ts";
@@ -46,7 +47,7 @@ test("rejects unknown policy status, rule shape and schema", () => {
 test("builds agent, shared and partition AWS domains; rejects malformed entries", () => {
   const config = {
     agents: { claude: ["api.anthropic.com"] },
-    hosts: ["docs.aws.amazon.com"],
+    allowedHosts: ["docs.aws.amazon.com"],
     awsDomains: { aws: ["**.amazonaws.com", "**.api.aws"], "aws-cn": ["**.amazonaws.com.cn"] },
   };
   assert.deepEqual(
@@ -66,6 +67,7 @@ test("builds agent, shared and partition AWS domains; rejects malformed entries"
     "https://example.com",
     "example.com:443",
     "10.0.0.0/8",
+    "10.0.0.1",
   ])
     assert.throws(() => destinations({ agents: { claude: [bad] } }, "claude", target), /DNS/);
 });
@@ -76,8 +78,32 @@ test("live probes cover each exact host and wildcard; metadata must stay blocked
     "probe.example.amazonaws.com:443",
     "probe.example.org:443",
   ]);
-  assert.deepEqual(blockedHosts, ["169.254.169.254", "fd00:ec2::254/128"]);
-  assert.deepEqual(blockedProbes, ["169.254.169.254:80", "[fd00:ec2::254]:80"]);
+  assert.deepEqual(metadataHosts, ["169.254.169.254", "fd00:ec2::254/128"]);
+  assert.deepEqual(deniedProbes([...metadataHosts, "pypi.org", "**.googleapis.com"]), [
+    "169.254.169.254:80",
+    "[fd00:ec2::254]:80",
+    "pypi.org:443",
+    "probe.example.googleapis.com:443",
+  ]);
+});
+test("blocks follow metadata, may carve into an allowed wildcard, but never cover an allowed host", () => {
+  const allowed = ["api.anthropic.com:443", "**.amazonaws.com:443"];
+  const deny = (blockedHosts: string[]) => denials({ agents: {}, blockedHosts }, allowed);
+  assert.deepEqual(denials({ agents: {} }, allowed), metadataHosts);
+  assert.deepEqual(deny(["pypi.org", "pypi.org", "s3.amazonaws.com"]), [
+    ...metadataHosts,
+    "pypi.org",
+    "s3.amazonaws.com",
+  ]);
+  for (const conflict of [
+    "api.anthropic.com",
+    "**.anthropic.com",
+    "*.anthropic.com",
+    "**.amazonaws.com",
+  ])
+    assert.throws(() => deny([conflict]), /would deny an allowed host/, conflict);
+  for (const bad of ["**", "pypi.org:443", "169.254.169.254", "https://pypi.org"])
+    assert.throws(() => deny([bad]), /DNS/, bad);
 });
 test("missing rules are added exactly once, per decision", () => {
   const rules = [
@@ -90,10 +116,10 @@ test("missing rules are added exactly once, per decision", () => {
   );
   // An allow never stands in for a deny of the same resource.
   const deny = { ...allow(["169.254.169.254"]), decision: "deny" };
-  assert.deepEqual(missingRules({ rules: [deny] }, "deny", blockedHosts), ["fd00:ec2::254/128"]);
+  assert.deepEqual(missingRules({ rules: [deny] }, "deny", metadataHosts), ["fd00:ec2::254/128"]);
   assert.deepEqual(
-    missingRules({ rules: [allow(blockedHosts)] }, "deny", blockedHosts),
-    blockedHosts,
+    missingRules({ rules: [allow(metadataHosts)] }, "deny", metadataHosts),
+    metadataHosts,
   );
   assert.throws(() => missingRules({}, "allow", []), /schema/);
 });

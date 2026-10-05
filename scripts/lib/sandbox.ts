@@ -7,8 +7,8 @@ import type { Runtime } from "./config.ts";
 import { configuration, modelSecrets, root } from "./config.ts";
 import {
   auditPolicy,
-  blockedHosts,
-  blockedProbes,
+  denials,
+  deniedProbes,
   destinations,
   missingRules,
   probes,
@@ -198,14 +198,19 @@ async function admitted(run: Runner, name: string, host: string): Promise<boolea
     throw new Error("Unexpected sbx network authorization response.");
   return response.allowed;
 }
-async function checkNetwork(run: Runner, name: string, allowed: string[]): Promise<void> {
+async function checkNetwork(
+  run: Runner,
+  name: string,
+  allowed: string[],
+  denied: string[],
+): Promise<void> {
   const expected = [
     ...probes(allowed).map((host) => [host, true] as const),
-    ...blockedProbes.map((host) => [host, false] as const),
+    ...deniedProbes(denied).map((host) => [host, false] as const),
   ];
   const results = await Promise.all(expected.map(([host]) => admitted(run, name, host)));
   if (results.some((result, i) => result !== expected[i][1]))
-    throw new Error("Effective network policy does not match the required allowlist.");
+    throw new Error("Effective network policy does not match the required allow and block lists.");
 }
 // The in-VM probe needs a real proxy denial of example.com, so it runs only
 // when the developer's policy blocks it.
@@ -213,16 +218,21 @@ async function probeInside(run: Runner, name: string): Promise<void> {
   if (await admitted(run, name, "example.com:443")) return;
   await inside(run, name, "probe-network");
 }
-// Add this project's allows, and the metadata denies, for this sandbox only,
-// on top of the developer's policy. On resume this also adds hosts since added
-// to the allowlist. The result is audited and checked destination by
-// destination either way. Default deny already blocks metadata, so the denies
-// are confirmed in the listed policy rather than by the checks.
-async function applyNetworkPolicy(run: Runner, name: string, allowed: string[]): Promise<void> {
+// Add this project's allows and denies for this sandbox only, on top of the
+// developer's policy. On resume this also adds hosts since added to either
+// list; hosts since removed keep their rules. The result is audited and checked
+// destination by destination either way. Default deny may already block a
+// denied host, so the denies are also confirmed in the listed policy.
+async function applyNetworkPolicy(
+  run: Runner,
+  name: string,
+  allowed: string[],
+  denied: string[],
+): Promise<void> {
   let policy = await listPolicy(run, name);
   const missing = {
     allow: missingRules(policy, "allow", allowed, name),
-    deny: missingRules(policy, "deny", blockedHosts, name),
+    deny: missingRules(policy, "deny", denied, name),
   };
   for (const decision of ["allow", "deny"] as const) {
     if (!missing[decision].length) continue;
@@ -234,9 +244,9 @@ async function applyNetworkPolicy(run: Runner, name: string, allowed: string[]):
   }
   if (missing.allow.length || missing.deny.length) policy = await listPolicy(run, name);
   auditPolicy(policy, name);
-  if (missingRules(policy, "deny", blockedHosts, name).length)
-    throw new Error("Instance metadata deny rules are missing from the network policy.");
-  await checkNetwork(run, name, allowed);
+  if (missingRules(policy, "deny", denied, name).length)
+    throw new Error("Deny rules are missing from the network policy.");
+  await checkNetwork(run, name, allowed, denied);
 }
 function sandboxNames(list: { sandboxes?: { name?: string }[] }): string[] {
   if (!Array.isArray(list.sandboxes)) throw new Error("Unsupported sbx list JSON schema.");
@@ -314,6 +324,7 @@ export async function launch(
   }
   const { runtime, network } = await configuration();
   const allowed = destinations(network, options.agent, target);
+  const denied = denials(network, allowed);
   // Fail before creating resources or minting credentials.
   const { grants, sandboxes } = await hostChecks(run, runtime, !!target);
   if (sandboxes.includes(name))
@@ -352,6 +363,7 @@ export async function launch(
         project,
         runtime.templates[options.agent].tag,
         allowed,
+        denied,
       ),
       target && assumeRestrictedRole(target, run, runtime.sessionDurationSeconds),
     ]);
@@ -386,6 +398,7 @@ async function prepareSandbox(
   project: string | undefined,
   template: string,
   allowed: string[],
+  denied: string[],
 ): Promise<void> {
   await sbx(
     run,
@@ -422,7 +435,7 @@ async function prepareSandbox(
   const checked = JSON.parse(await inside(run, name, "check")) as { cwd: string; home: string };
   if (!checked.cwd?.startsWith("/") || checked.home !== "/home/agent")
     throw new Error("Unexpected template working directory or user.");
-  await applyNetworkPolicy(run, name, allowed);
+  await applyNetworkPolicy(run, name, allowed, denied);
   await probeInside(run, name);
 }
 
@@ -487,13 +500,14 @@ export async function resume(
   // every host-side check that guards a credential handoff.
   const { runtime, network } = await configuration();
   const allowed = destinations(network, state.agent, state.target);
+  const denied = denials(network, allowed);
   const { grants, sandboxes } = await hostChecks(run, runtime, !!state.target);
   reportGrants(grants);
   if (!sandboxes.includes(name))
     throw new Error(
       "Sandbox not found in this sbx setup; check that you are using the setup it was launched from.",
     );
-  await applyNetworkPolicy(run, name, allowed);
+  await applyNetworkPolicy(run, name, allowed, denied);
   const remaining = Date.parse(state.expiresAt ?? "") - Date.now();
   // Sessions this close to expiry are renewed before reattaching.
   if (state.target && !(remaining > runtime.renewWithinSeconds * 1000)) {

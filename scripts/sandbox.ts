@@ -34,8 +34,9 @@ AWS options:
                           config/runtime.json)
   --region REGION         Override the account profile's region
 
-This project's hosts are added to your existing sbx network policy (balanced is
-recommended); SSH agent forwarding, stored secrets and MCP servers are reported.
+This project's allowed and blocked hosts are added to your existing sbx network
+policy (balanced is recommended); SSH agent forwarding, stored secrets and MCP
+servers are reported.
 
 With Node directly: node scripts/sandbox.ts <sbx|preview|doctor|build> ...
 Preview reads local profile metadata only; it does not run credential processes.

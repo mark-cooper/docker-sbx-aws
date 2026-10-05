@@ -86,8 +86,9 @@ The restricted, short-lived AWS role is the primary control; the network policy 
 
 The launcher:
 
-- adds sandbox-scoped allows for this project's hosts (below) on top of your policy, without changing global policy or denying anything your policy or agent kits allow;
-- refuses a policy that allows every destination (`**`, `0.0.0.0/0`), and checks that instance metadata (`169.254.169.254`, `fd00:ec2::254`) stays blocked, since on a cloud host it would hand the agent the host's own credentials;
+- adds sandbox-scoped allows for this project's hosts (below) on top of your policy, without changing global policy;
+- adds sandbox-scoped denies for instance metadata (`169.254.169.254`, `fd00:ec2::254/128`) and `blockedHosts`; denies override any allow, including your own policy's;
+- refuses a policy that allows every destination (`**`, `0.0.0.0/0`), and checks that instance metadata stays blocked, since on a cloud host it would hand the agent the host's own credentials;
 - warns, before creating the sandbox, about other access the agent gets: SSH agent forwarding, stored service secrets such as `github`, and registered MCP servers.
 
 SSH agent forwarding gives the agent every key in your agent, typically for longer and more widely than the AWS session. Prefer a separate agent holding only the keys the agent needs, ideally added with `ssh-add -c` so each use asks for confirmation, set via `sbx settings set ssh.agentSocketPath`.
@@ -95,10 +96,12 @@ SSH agent forwarding gives the agent every key in your agent, typically for long
 The launcher adds sandbox-scoped TCP/443 allowances from [config/network-policy.json](config/network-policy.json):
 
 - **Model/auth hosts** (`agents`), per agent — deliberately small; add exact domains only when a flow requires them.
-- **Other hosts** (`hosts`, every agent): `docs.aws.amazon.com`.
+- **Other hosts** (`allowedHosts`, every agent): `docs.aws.amazon.com`, `docs.docker.com`, `mise.jdx.dev`.
 - **AWS domains** (`awsDomains`, per partition): `**.amazonaws.com` and `**.api.aws` (`**.amazonaws.com.cn` in China) — every AWS service API in every region plus global endpoints (S3, CloudWatch Logs, Route 53, ACM, Organizations, Cost Explorer, pricing API).
 
-After applying rules, the launcher reads the policy back and probes a host beneath each wildcard and each exact host before handing over credentials — there is no skip-policy fallback. When your policy blocks `example.com`, it also checks from inside the sandbox that the proxy denies it.
+It also denies `blockedHosts` (every agent, all ports), such as PyPI, Azure, VS Code and Vercel. Entries are DNS names or `*.`/`**.` wildcards. A block may carve a host out of an allowed wildcard but must not cover an allowed host. Removing a block does not remove the deny from existing sandboxes: `sbx policy rm network --sandbox <name> --resource <host>`.
+
+After applying rules, the launcher reads the policy back and probes a host beneath each wildcard and each exact host, allowed or blocked, before handing over credentials — there is no skip-policy fallback. When your policy blocks `example.com`, it also checks from inside the sandbox that the proxy denies it.
 
 **Egress is not a hard boundary.** `**.amazonaws.com` admits hosts any AWS customer controls — EC2 public DNS, load balancers, API Gateway, S3 buckets, RDS/OpenSearch endpoints — so an agent could send data it reads to a server someone else runs on AWS, and allowed model endpoints receive whatever the agent reads. Your own policy adds whatever it allows (typically Git hosts and package registries). The restricted, read-only, short-lived role is the main control; replace `awsDomains` wildcards with exact hosts if egress matters for your use. Organizations data is only readable from the management or a delegated administrator account.
 

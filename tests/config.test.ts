@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readdir } from "node:fs/promises";
 import { test } from "node:test";
 import { configuration, modelSecrets, validateRuntime } from "../scripts/lib/config.ts";
+import { denials, destinations } from "../scripts/lib/network.ts";
+import type { Target } from "../scripts/lib/profiles.ts";
 
 const valid = {
   minSbxVersion: "0.46.0",
@@ -20,6 +22,14 @@ test("every configured agent has a Dockerfile and network hosts, and vice versa"
     .sort();
   assert.deepEqual(dockerfiles, agents);
   assert.deepEqual(Object.keys(network.agents).sort(), agents);
+});
+test("no configured block covers a host any agent is allowed, in any partition", async () => {
+  const { network } = await configuration();
+  for (const agent of Object.keys(network.agents))
+    for (const partition of [undefined, ...Object.keys(network.awsDomains ?? {})]) {
+      const target = partition ? ({ partition } as Target) : undefined;
+      assert.doesNotThrow(() => denials(network, destinations(network, agent, target)));
+    }
 });
 test("model secrets come from the templates", () => {
   assert.deepEqual(

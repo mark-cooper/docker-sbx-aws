@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { configuration } from "../scripts/lib/config.ts";
-import { blockedHosts } from "../scripts/lib/network.ts";
+import { metadataHosts } from "../scripts/lib/network.ts";
 import type { Runner, RunOptions } from "../scripts/lib/process.ts";
 import type { Target } from "../scripts/lib/profiles.ts";
 import {
@@ -17,7 +17,9 @@ import {
 } from "../scripts/lib/sandbox.ts";
 import { defaultName, loadState, saveState } from "../scripts/lib/state.ts";
 
-const { minSbxVersion, renewWithinSeconds } = (await configuration()).runtime;
+const { runtime, network } = await configuration();
+const { minSbxVersion, renewWithinSeconds } = runtime;
+const denies = [...metadataHosts, ...(network.blockedHosts ?? [])];
 
 const target: Target = {
   profile: "demo-project",
@@ -45,6 +47,7 @@ async function fixture(
       mcpServers: number;
       allowExample: boolean;
       dropDenies: boolean;
+      ignoreDenies: boolean;
       otherSandboxes: string[];
       secrets: { scope: string; type: string; name: string }[];
     };
@@ -65,6 +68,8 @@ async function fixture(
       allowExample: false,
       // Stands in for an sbx that does not record the deny rules it is given.
       dropDenies: false,
+      // Stands in for an sbx that records deny rules but does not enforce them.
+      ignoreDenies: false,
       otherSandboxes: [] as string[],
       secrets: [] as { scope: string; type: string; name: string }[],
     };
@@ -172,12 +177,22 @@ async function fixture(
       // any subdomain on the same port.
       const probe = args.at(-1)!;
       // allowExample stands in for a developer's broader default policy.
-      // A deny without a port covers every port and wins over any allow.
+      // A deny without a port covers every port and wins over any allow,
+      // including the developer's own (pypi.org stands in for those).
       const host = probe.replace(/:\d+$/, "").replace(/^\[(.*)\]$/, "$1");
+      const denied =
+        !control.ignoreDenies &&
+        [...sandboxDenies].some(
+          (rule) =>
+            rule === host ||
+            rule === `${host}/128` ||
+            (rule.startsWith("**.") &&
+              (host === rule.slice(3) || host.endsWith(`.${rule.slice(3)}`))),
+        );
       const allowed =
-        !sandboxDenies.has(host) &&
-        !sandboxDenies.has(`${host}/128`) &&
+        !denied &&
         ((control.allowExample && probe === "example.com:443") ||
+          probe === "pypi.org:443" ||
           [...sandboxAllows].some(
             (rule) =>
               rule === probe ||
@@ -228,11 +243,13 @@ test("launch orders checks before handoff, keeps secrets on stdin, and mounts th
       calls.findIndex((c) => c.args.at(-1) === "probe-network") <
         calls.findIndex((c) => c.args.at(-1) === "inject"),
     );
-    // The allowlist is added in one call, and so are the metadata denies.
+    // The allowlist is added in one call, and so are metadata and the blocks.
     assert.equal(calls.filter((c) => c.args[1] === "allow").length, 1);
-    const denies = calls.filter((c) => c.args[0] === "policy" && c.args[1] === "deny");
-    assert.equal(denies.length, 1);
-    assert.deepEqual(denies[0].args.slice(3), ["--sandbox", name, blockedHosts.join(",")]);
+    const denyCalls = calls.filter((c) => c.args[0] === "policy" && c.args[1] === "deny");
+    assert.equal(denyCalls.length, 1);
+    assert.deepEqual(denyCalls[0].args.slice(3), ["--sandbox", name, denies.join(",")]);
+    // A block is checked against the developer's own allow of it.
+    assert.ok(calls.some((c) => c.args[1] === "check" && c.args.at(-1) === "pypi.org:443"));
     assert.ok(
       calls.findIndex((c) => c.args.at(-1) === "inject") <
         calls.findIndex((c) => c.args[0] === "run"),
@@ -246,19 +263,24 @@ test("launch orders checks before handoff, keeps secrets on stdin, and mounts th
     await destroy(name, run);
     assert.equal((await loadState(name)).phase, "destroyed");
   }));
-test("a launch stops before handoff when the metadata denies are not recorded", async () =>
-  fixture(async ({ run, calls, control }) => {
-    control.dropDenies = true;
-    await assert.rejects(launch(target, { agent: "claude" }, run), /metadata deny/);
-    assert.ok(!calls.some((c) => c.args.at(-1) === "inject" || c.args[0] === "run"));
-  }));
+test("a launch stops before handoff when denies are not recorded or not enforced", async () => {
+  for (const [failure, message] of [
+    ["dropDenies", /Deny rules are missing/],
+    ["ignoreDenies", /block lists/],
+  ] as const)
+    await fixture(async ({ run, calls, control }) => {
+      control[failure] = true;
+      await assert.rejects(launch(target, { agent: "claude" }, run), message);
+      assert.ok(!calls.some((c) => c.args.at(-1) === "inject" || c.args[0] === "run"));
+    });
+});
 test("allow-all host policy stops before creating a sandbox or contacting AWS STS", async () =>
   fixture(async ({ project, run, calls, control }) => {
     control.broadPolicy = true;
     await assert.rejects(launch(target, { agent: "claude", project }, run), /every destination/);
     assert.ok(!calls.some((c) => c.args[0] === "create" || c.args[0] === "sts"));
   }));
-test("the host setup is tolerated, extra grants are reported, and only metadata is denied", async () =>
+test("the host setup is tolerated, extra grants are reported, and only the configured blocks are denied", async () =>
   fixture(async ({ run, calls, control }) => {
     control.secrets = [{ scope: "global", type: "service", name: "github" }];
     control.forwarding = true;
@@ -278,7 +300,7 @@ test("the host setup is tolerated, extra grants are reported, and only metadata 
     const denied = calls
       .filter((c) => c.args[0] === "policy" && c.args[1] === "deny")
       .flatMap((c) => c.args.at(-1)!.split(","));
-    assert.deepEqual(denied, blockedHosts);
+    assert.deepEqual(denied, denies);
     // Metadata is still checked; example.com is allowed, so no in-VM denial probe.
     assert.ok(calls.some((c) => c.args[1] === "check" && c.args.at(-1) === "169.254.169.254:80"));
     assert.ok(!calls.some((c) => c.args.at(-1) === "probe-network"));
