@@ -3,9 +3,15 @@ import { test } from "node:test";
 import {
   bridgeProfile,
   mergeProfiles,
+  type Profiles,
   parseProfiles,
+  type Selection,
   selectTarget,
 } from "../scripts/lib/profiles.ts";
+
+// The CLI supplies config/runtime.json's defaultRole when --role is absent.
+const select = (profiles: Profiles, profile: string, options: Partial<Selection> = {}) =>
+  selectTarget(profiles, profile, { role: "ReadOnlyRole", ...options });
 
 function fixtures(
   target = "workload",
@@ -29,7 +35,7 @@ test("generic profiles split across files resolve metadata and immediate source"
     ["workload", "session-bridge", "browser-login", "DeveloperRole"],
     ["research-prod", "auth-source", "personal-login", "ops/OperatorRole"],
   ]) {
-    const target = selectTarget(fixtures(...names), names[0]);
+    const target = select(fixtures(...names), names[0]);
     assert.equal(target.account, "222222222222");
     assert.equal(target.sourceProfile, names[1]);
     assert.equal(target.loginProfile, names[2]);
@@ -40,7 +46,7 @@ test("generic profiles split across files resolve metadata and immediate source"
 test("role path, region and source overrides do not modify profiles", () => {
   const profiles = fixtures(),
     before = JSON.stringify([...profiles]);
-  const target = selectTarget(profiles, "workload", {
+  const target = select(profiles, "workload", {
     sourceProfile: "browser-login",
     role: "agents/RestrictedRole",
     region: "eu-west-1",
@@ -57,40 +63,40 @@ test("intermediate roles are validated but not skipped", () => {
     source_profile: "session-bridge",
   });
   profiles.get("workload")!.source_profile = "intermediate";
-  const target = selectTarget(profiles, "workload");
+  const target = select(profiles, "workload");
   assert.equal(target.sourceProfile, "intermediate");
   assert.equal(target.loginProfile, "browser-login");
 });
 test("rejects cycles, self-source overrides and bridges back through target", () => {
-  assert.throws(
-    () => selectTarget(fixtures(), "workload", { sourceProfile: "workload" }),
-    /cyclic/,
-  );
+  assert.throws(() => select(fixtures(), "workload", { sourceProfile: "workload" }), /cyclic/);
   const profiles = fixtures();
   profiles.get("session-bridge")!.credential_process =
     "aws configure export-credentials --profile workload --format process";
-  assert.throws(() => selectTarget(profiles, "workload"), /cyclic/);
+  assert.throws(() => select(profiles, "workload"), /cyclic/);
+});
+test("a role is required", () => {
+  assert.throws(() => selectTarget(fixtures(), "workload", { role: "" }), /defaultRole/);
 });
 test("unsupported metadata never activates the target as a fallback", () => {
   const profiles = fixtures();
   delete profiles.get("workload")!.role_arn;
-  assert.throws(() => selectTarget(profiles, "workload"), /role_arn/);
-  assert.throws(() => selectTarget(fixtures(), "missing"), /does not exist/);
+  assert.throws(() => select(profiles, "workload"), /role_arn/);
+  assert.throws(() => select(fixtures(), "missing"), /does not exist/);
   assert.throws(
-    () => selectTarget(fixtures(), "workload", { role: "arn:aws:iam::222222222222:role/Admin" }),
+    () => select(fixtures(), "workload", { role: "arn:aws:iam::222222222222:role/Admin" }),
     /not an ARN/,
   );
   assert.throws(
-    () => selectTarget(fixtures(), "workload", { sourceProfile: "missing" }),
+    () => select(fixtures(), "workload", { sourceProfile: "missing" }),
     /does not exist/,
   );
 });
 test("rejects static credentials only in the selected source chain", () => {
   const profiles = fixtures();
   profiles.set("unrelated", { aws_access_key_id: "EXAMPLE_ONLY" });
-  assert.doesNotThrow(() => selectTarget(profiles, "workload"));
+  assert.doesNotThrow(() => select(profiles, "workload"));
   profiles.get("browser-login")!.aws_access_key_id = "EXAMPLE_ONLY";
-  assert.throws(() => selectTarget(profiles, "workload"), /Static credentials/);
+  assert.throws(() => select(profiles, "workload"), /Static credentials/);
 });
 test("INI metadata handles BOM, CRLF, comments, nested settings and quoted profile names", () => {
   const profiles = parseProfiles(
@@ -114,9 +120,9 @@ test("login bridge accepts flag order and quoted executable paths", () => {
 test("validates partition/region and replaces the original role path", () => {
   const profiles = fixtures();
   profiles.get("workload")!.role_arn = "arn:aws-cn:iam::222222222222:role/path/Developer";
-  assert.throws(() => selectTarget(profiles, "workload"), /partition/);
+  assert.throws(() => select(profiles, "workload"), /partition/);
   assert.equal(
-    selectTarget(profiles, "workload", { region: "cn-north-1" }).roleArn,
+    select(profiles, "workload", { region: "cn-north-1" }).roleArn,
     "arn:aws-cn:iam::222222222222:role/ReadOnlyRole",
   );
 });

@@ -23,7 +23,7 @@ All profile names and account IDs in this repository are fictional examples.
 
 ## How it works
 
-The account profile supplies `role_arn`, `source_profile`, and region as metadata. The launcher extracts the account and partition, substitutes `ReadOnlyRole` (configurable), and calls STS using the immediate source profile. It never activates the account profile's original role to discover the account or as a fallback.
+The account profile supplies `role_arn`, `source_profile`, and region as metadata. The launcher extracts the account and partition, substitutes the restricted role (`defaultRole` in [config/runtime.json](config/runtime.json), default `ReadOnlyRole`, or `--role`, which takes precedence), and calls STS using the immediate source profile. It never activates the account profile's original role to discover the account or as a fallback.
 
 ```text
 browser login -> source profile -> target account's ReadOnlyRole -> sandbox
@@ -40,7 +40,7 @@ Only the resulting access key, secret, session token, expiry, and region enter t
 - Docker with Linux image builds, plus local Docker Sandboxes (sbx) at `minSbxVersion` in [config/runtime.json](config/runtime.json) or later. Install via `brew install docker/tap/sbx`, `winget install Docker.sbx`, or `docker-sbx` from Docker's apt repo, and restart the sbx daemon after upgrading. If a newer release breaks the launcher, report it to raise the minimum; an older sbx fails with an upgrade hint. sbx isn't installed by mise since Windows ships it only as an MSI.
 - An account profile with a valid IAM `role_arn`, a `source_profile` (or `--source-profile` override), and a region (or `--region`).
 - A source using a login session, a trusted `credential_process`, or an intermediate role via `source_profile`. Static credentials anywhere in this chain are rejected. Credential processes are trusted host code and are never executed by preview.
-- An existing restricted role (default `ReadOnlyRole`, or `--role`) whose effective permissions allow intended reads and deny writes, role escalation, and unwanted data reads (e.g. S3 object downloads) — AWS's generic read-only managed policy may allow more than you intend.
+- An existing restricted role (`defaultRole` in [config/runtime.json](config/runtime.json), or `--role`) whose effective permissions allow intended reads and deny writes, role escalation, and unwanted data reads (e.g. S3 object downloads) — AWS's generic read-only managed policy may allow more than you intend.
 - Direct access from the source identity to the restricted role: target trust and, for cross-account access, source permission to assume it. Access to the original account role does not imply this.
 - Not supported yet: inferring target accounts without `role_arn`, replacement-role MFA/external-ID/source-identity arguments, or refreshing credentials mid-session. Sessions request one hour; role chaining caps at one hour; relaunch after expiry.
 

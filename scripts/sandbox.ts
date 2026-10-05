@@ -29,7 +29,8 @@ AWS options:
   --profile NAME          Account profile supplying role_arn, source_profile and region;
                           without it the sandbox gets no AWS session or AWS domains
   --source-profile NAME   Override the account profile's immediate source_profile
-  --role NAME_OR_PATH     Restricted role to assume (default ReadOnlyRole)
+  --role NAME_OR_PATH     Restricted role to assume (default: defaultRole in
+                          config/runtime.json)
   --region REGION         Override the account profile's region
 
 This project's hosts are added to your existing sbx network policy (balanced is
@@ -65,7 +66,7 @@ async function target(values: {
   }
   return selectTarget(await readProfiles(), values.profile, {
     sourceProfile: values["source-profile"],
-    role: values.role,
+    role: values.role ?? (await configuration()).runtime.defaultRole,
     region: values.region,
   });
 }

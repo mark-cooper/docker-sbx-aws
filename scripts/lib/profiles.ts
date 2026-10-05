@@ -15,7 +15,8 @@ export interface Target {
 }
 export interface Selection {
   sourceProfile?: string;
-  role?: string;
+  // The caller resolves --role against config/runtime.json's defaultRole.
+  role: string;
   region?: string;
 }
 
@@ -94,7 +95,7 @@ export function bridgeProfile(command: string): string | undefined {
   return tokens[profile + 1];
 }
 
-export function selectTarget(profiles: Profiles, profile: string, options: Selection = {}): Target {
+export function selectTarget(profiles: Profiles, profile: string, options: Selection): Target {
   const metadata = profiles.get(profile);
   if (!metadata) throw new Error(`AWS profile ${JSON.stringify(profile)} does not exist.`);
   const arn = /^arn:(aws|aws-us-gov|aws-cn):iam::(\d{12}):role\/([^\s]+)$/.exec(
@@ -104,7 +105,9 @@ export function selectTarget(profiles: Profiles, profile: string, options: Selec
     throw new Error(
       "Selected profile must have a valid IAM role_arn; its credentials will not be activated for account discovery.",
     );
-  const role = options.role ?? "ReadOnlyRole";
+  const role = options.role;
+  if (typeof role !== "string" || !role)
+    throw new Error("No restricted role: pass --role or set defaultRole in config/runtime.json.");
   if (!/^(?:[A-Za-z0-9+=,.@_-]+\/)*[A-Za-z0-9+=,.@_-]{1,64}$/.test(role) || role.length > 576)
     throw new Error("Role must be an IAM role name or path, not an ARN.");
   const sourceProfile = options.sourceProfile ?? metadata.source_profile;

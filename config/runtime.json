@@ -1,5 +1,6 @@
 {
   "minSbxVersion": "0.46.0",
+  "defaultRole": "ReadOnlyRole",
   "templates": {
     "claude": {
       "tag": "readonly-agent-claude:0.2.0"

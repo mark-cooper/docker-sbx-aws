@@ -22,6 +22,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const bootstrap = "/opt/readonly-sandbox/bootstrap.ts";
 export interface Runtime {
   minSbxVersion: string;
+  // Restricted role assumed when --role is not given.
+  defaultRole: string;
   templates: Record<string, { tag: string }>;
 }
 export interface LaunchOptions {
