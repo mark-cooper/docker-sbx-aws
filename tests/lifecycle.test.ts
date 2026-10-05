@@ -40,6 +40,9 @@ async function fixture(
       broadPolicy: boolean;
       injectFails: boolean;
       createFails: boolean;
+      forwarding: boolean;
+      mcpServers: number;
+      allowExample: boolean;
       secrets: { scope: string; type: string; name: string }[];
     };
   }) => Promise<void>,
@@ -54,6 +57,9 @@ async function fixture(
       broadPolicy: false,
       injectFails: false,
       createFails: false,
+      forwarding: false,
+      mcpServers: 0,
+      allowExample: false,
       secrets: [] as { scope: string; type: string; name: string }[],
     };
   let name = "",
@@ -92,10 +98,13 @@ async function fixture(
           ? { Account: "111111111111", Arn: "source", UserId: "source-id" }
           : identity;
     } else if (args[0] === "version") result = `sbx version: v${minSbxVersion} test`;
-    else if (args[0] === "mcp") result = { servers: [] };
+    else if (args[0] === "mcp")
+      result = {
+        servers: Array.from({ length: control.mcpServers }, (_, i) => ({ name: `m${i}` })),
+      };
     else if (args[0] === "secret") result = { secrets: control.secrets, custom_secrets: [] };
     else if (args[0] === "settings")
-      result = args[2] === "ssh.agentForwardingEnabled" ? "false" : "";
+      result = args[2] === "ssh.agentForwardingEnabled" ? String(control.forwarding) : "";
     else if (args[0] === "create") {
       if (control.createFails) code = 1;
       else {
@@ -139,12 +148,15 @@ async function fixture(
       // Independent of the launcher's matcher: sbx "**." admits the domain and
       // any subdomain on the same port.
       const probe = args.at(-1)!;
-      const allowed = [...sandboxAllows].some(
-        (rule) =>
-          rule === probe ||
-          (rule.startsWith("**.") &&
-            (probe === rule.slice(3) || probe.endsWith(`.${rule.slice(3)}`))),
-      );
+      // allowExample stands in for a developer's broader default policy.
+      const allowed =
+        (control.allowExample && probe === "example.com:443") ||
+        [...sandboxAllows].some(
+          (rule) =>
+            rule === probe ||
+            (rule.startsWith("**.") &&
+              (probe === rule.slice(3) || probe.endsWith(`.${rule.slice(3)}`))),
+        );
       result = { allowed, target: args.at(-1) };
       if (!allowed) code = 1;
     } else if (args[0] === "exec") {
@@ -196,11 +208,33 @@ test("launch orders checks before handoff, keeps secrets on stdin, and mounts th
     await destroy(name, run);
     assert.equal((await loadState(name)).phase, "destroyed");
   }));
-test("broad host policy stops before creating a sandbox or contacting AWS STS", async () =>
+test("allow-all host policy stops before creating a sandbox or contacting AWS STS", async () =>
   fixture(async ({ project, run, calls, control }) => {
     control.broadPolicy = true;
-    await assert.rejects(launch(target, { agent: "claude", project }, run), /outside/);
+    await assert.rejects(launch(target, { agent: "claude", project }, run), /every destination/);
     assert.ok(!calls.some((c) => c.args[0] === "create" || c.args[0] === "sts"));
+  }));
+test("the host setup is tolerated, extra grants are reported, and nothing is denied", async () =>
+  fixture(async ({ run, calls, control }) => {
+    control.secrets = [{ scope: "global", type: "service", name: "github" }];
+    control.forwarding = true;
+    control.mcpServers = 1;
+    control.allowExample = true;
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (message: string) => warnings.push(message);
+    try {
+      await launch(target, { agent: "claude" }, run);
+    } finally {
+      console.warn = warn;
+    }
+    const grants = warnings.find((w) => w.includes("besides the restricted AWS session"))!;
+    for (const grant of ["SSH agent forwarding", '"github"', "MCP server"])
+      assert.ok(grants.includes(grant), grant);
+    assert.ok(!calls.some((c) => c.args[1] === "deny"));
+    // Metadata is still checked; example.com is allowed, so no in-VM denial probe.
+    assert.ok(calls.some((c) => c.args[1] === "check" && c.args.at(-1) === "169.254.169.254:80"));
+    assert.ok(!calls.some((c) => c.args.at(-1) === "probe-network"));
   }));
 test("denied assumption and failed in-VM verification never start an agent", async () => {
   for (const failure of ["denyAws", "injectFails"] as const)
@@ -254,12 +288,6 @@ test("without a project path the workspace starts empty and never touches the cu
     assert.equal(state.project, undefined);
     await destroy(name, run);
   }));
-test("stored non-model sbx secrets stop launch before creating a sandbox", async () =>
-  fixture(async ({ project, run, calls, control }) => {
-    control.secrets = [{ scope: "global", type: "service", name: "github" }];
-    await assert.rejects(launch(target, { agent: "claude", project }, run), /"github"/);
-    assert.ok(!calls.some((c) => c.args[0] === "create" || c.args[1] === "assume-role"));
-  }));
 test("resume repeats host checks, renews only near expiry, and refuses failed launches", async () =>
   fixture(async ({ run, calls, control }) => {
     const name = await launch(target, { agent: "claude" }, run);
@@ -284,12 +312,27 @@ test("resume repeats host checks, renews only near expiry, and refuses failed la
     const inject = calls.filter((c) => c.args.at(-1) === "inject").at(-1)!;
     assert.ok(!inject.args.join(" ").includes("EXAMPLE_SECRET"));
     // Host checks still gate a resume.
-    control.secrets = [{ scope: "global", type: "service", name: "github" }];
-    await assert.rejects(resume(name, run), /"github"/);
+    control.broadPolicy = true;
+    await assert.rejects(resume(name, run), /every destination/);
     assert.equal(attaches(), 3);
-    control.secrets = [];
+    control.broadPolicy = false;
     await saveState({ ...state, phase: "failed" });
     await assert.rejects(resume(name, run), /Only ready sessions/);
+  }));
+test("without a target the sandbox gets no AWS session, AWS domains or AWS CLI check", async () =>
+  fixture(async ({ run, calls }) => {
+    const name = await launch(undefined, { agent: "claude" }, run);
+    assert.ok(!calls.some((c) => c.tool === "aws"));
+    assert.ok(!calls.some((c) => c.args.includes("inject")));
+    const allows = calls.filter((c) => c.args[1] === "allow").map((c) => c.args.at(-1));
+    assert.ok(allows.includes("api.anthropic.com:443"));
+    assert.ok(!allows.some((host) => host?.includes("amazonaws")));
+    const state = await loadState(name);
+    assert.equal(state.target, undefined);
+    assert.equal(state.expiresAt, undefined);
+    // Resume never tries to renew a session that was never issued.
+    await resume(name, run);
+    assert.ok(!calls.some((c) => c.tool === "aws"));
   }));
 test("resume checks an explicitly confirmed agent against the sandbox's own", async () =>
   fixture(async ({ run }) => {
@@ -297,7 +340,7 @@ test("resume checks an explicitly confirmed agent against the sandbox's own", as
     await resume(name, run, "claude");
     await assert.rejects(resume(name, run, "codex"), /is a claude sandbox, not codex/);
   }));
-test("only model secrets are tolerated", () => {
+test("only non-model secrets are reported", () => {
   const service = (name: string) => ({ scope: "global", type: "service", name });
   const list = (...names: string[]) => ({ secrets: names.map(service), custom_secrets: [] });
   assert.deepEqual(unexpectedSecrets(list("anthropic", "openai")), []);

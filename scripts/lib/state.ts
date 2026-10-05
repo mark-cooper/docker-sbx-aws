@@ -7,7 +7,8 @@ export interface State {
   version: 2;
   name: string;
   agent: string;
-  target: Target;
+  // Absent for a sandbox launched without an AWS session.
+  target?: Target;
   // Absent for an empty workspace.
   project?: string;
   // Expiry of the restricted AWS session last handed to the sandbox.

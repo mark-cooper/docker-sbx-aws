@@ -6,12 +6,15 @@ Launch a coding agent in a local Docker Sandbox with a temporary session for an 
 aws login --profile browser-login
 mise run sbx run <agent> --profile profile
 mise run sbx run <agent> /path/to/project --profile profile # mounts the local directory for host edits
+mise run sbx run <agent> /path/to/project                   # same template, no AWS session
 
 # reattaching
 mise run sbx run --name <name>
 ```
 
 `<agent>` is any agent with a template in [config/runtime.json](config/runtime.json).
+
+Without `--profile` the sandbox uses the same template and checks but gets no AWS session and no AWS domains in its network allowlist; `--source-profile`, `--role`, and `--region` then aren't accepted. Reattaching such a sandbox never contacts AWS.
 
 `mise run sbx` mirrors the [sbx CLI](https://docs.docker.com/ai/sandboxes/usage/): the same command works with or without mise. Through mise, `run` and `rm` also handle the AWS session; any other command, like `mise run sbx ls`, goes to sbx unchanged. The other mise tasks (`preview`, `doctor`, `build`, `build_all`) have no sbx equivalent. Run `node scripts/sandbox.ts --help` for the full list.
 
@@ -27,7 +30,7 @@ browser login -> source profile -> target account's ReadOnlyRole -> sandbox
                     +-> original account role (normal host workflow)
 ```
 
-Only the resulting access key, secret, session token, expiry, and region enter the sandbox, via stdin, stored in an owner-readable file inside the microVM, outside the project. Source credentials, host AWS files, SSH agent variables, and unrelated host tokens are not forwarded.
+Only the resulting access key, secret, session token, expiry, and region enter the sandbox, via stdin, stored in an owner-readable file inside the microVM, outside the project. Source credentials, host AWS files, and unrelated host tokens are not forwarded by the launcher. Access sbx itself grants — SSH agent forwarding, stored service secrets, MCP servers — is left as you configured it and reported at launch (see [Sandbox network policy](#sandbox-network-policy)).
 
 ## Requirements
 
@@ -52,7 +55,7 @@ mise run build_all  # or one agent: mise run build <agent>
 
 Each `sandbox/Dockerfile.<agent>` is a self-contained, independently buildable multi-stage build: it starts from Docker's upstream template for that agent, pinned by digest, then layers in Node, AWS CLI, and mise from their own pinned upstream images. Every agent Dockerfile shares an identical body — only the first `FROM ... AS base` line differs — and a test (`tests/dockerfiles.test.ts`) fails CI if they ever drift apart. Builds load into the separate sandbox image store and can take several minutes; they use no AWS credentials.
 
-Dependabot opens a PR when a newer upstream image is available, updating tag and digest together; CI builds every Dockerfile on each PR. After merging an upgrade, run `mise run build_all` and `npm run test:runtime` to load and test the new templates — running sessions are unaffected.
+Dependabot opens a PR when a newer upstream image is available, updating tag and digest together; CI builds every Dockerfile on each PR. After merging an upgrade, or after changing `sandbox/bootstrap.ts` (bump the template tags in [config/runtime.json](config/runtime.json) so stale templates aren't used), run `mise run build_all` and `npm run test:runtime` to load and test the new templates — running sessions are unaffected.
 
 ### Adding an agent
 
@@ -74,19 +77,19 @@ mise run sbx run <agent> /path/to/repository --profile profile
 mise run sbx run <agent> /path/to/repository --profile profile --role agents/RestrictedReadOnlyRole
 ```
 
-`--source-profile other-source` overrides the immediate source (resolved normally by the AWS CLI). Expired-login diagnostics identify upstream login profiles and recognized export-credentials bridges; opaque credential processes get a generic renewal hint. `doctor --agent <agent>` checks that agent's network allowlist.
+`--source-profile other-source` overrides the immediate source (resolved normally by the AWS CLI). Expired-login diagnostics identify upstream login profiles and recognized export-credentials bridges; opaque credential processes get a generic renewal hint. `doctor` runs the host sbx and network policy checks, then verifies role assumption; without `--profile` it runs only the host checks.
 
 ### Sandbox network policy
 
-Use a **dedicated sbx setup** with default-deny network policy, no registered MCP servers, no stored secrets other than the agents' model secrets (`modelSecrets` in [scripts/lib/sandbox.ts](scripts/lib/sandbox.ts); check with `sbx secret ls`), and SSH agent forwarding disabled. sbx injects stored service secrets like `github` into every sandbox, so remove them from this dedicated setup (`sbx secret rm github`). A fresh dedicated installation:
+The restricted, short-lived AWS role is the primary control; the network policy is a secondary layer. The launcher works with your existing sbx setup, and **the recommended sbx network policy is `balanced`**. Choose it when sbx first asks, or switch with `sbx policy init balanced`. That resets global policy, so check what other sandboxes rely on first (`sbx policy ls --type network --wide`).
 
-```sh
-sbx policy init deny-all
-sbx settings set ssh.agentForwardingEnabled false
-sbx daemon restart
-```
+The launcher:
 
-This sets global policy, not a per-project setting — don't blindly reset policies other sandboxes rely on. On an existing installation, inspect `sbx policy ls --type network --wide` and build a compatible setup with Docker's policy controls.
+- adds sandbox-scoped allows for this project's hosts (below) on top of your policy, without changing global policy or denying anything your policy or agent kits allow;
+- refuses a policy that allows every destination (`**`, `0.0.0.0/0`), and checks that instance metadata (`169.254.169.254`, `fd00:ec2::254`) stays blocked, since on a cloud host it would hand the agent the host's own credentials;
+- warns, before creating the sandbox, about other access the agent gets: SSH agent forwarding, stored service secrets such as `github`, and registered MCP servers.
+
+SSH agent forwarding gives the agent every key in your agent, typically for longer and more widely than the AWS session. Prefer a separate agent holding only the keys the agent needs, ideally added with `ssh-add -c` so each use asks for confirmation, set via `sbx settings set ssh.agentSocketPath`.
 
 The launcher adds sandbox-scoped TCP/443 allowances from [config/network-policy.json](config/network-policy.json):
 
@@ -94,9 +97,9 @@ The launcher adds sandbox-scoped TCP/443 allowances from [config/network-policy.
 - **Other hosts** (`hosts`, every agent): `docs.aws.amazon.com`.
 - **AWS domains** (`awsDomains`, per partition): `**.amazonaws.com` and `**.api.aws` (`**.amazonaws.com.cn` in China) — every AWS service API in every region plus global endpoints (S3, CloudWatch Logs, Route 53, ACM, Organizations, Cost Explorer, pricing API).
 
-Built-in kits also grant exact download/package endpoints; the launcher adds matching denies for those outside the list. Only the configured wildcards are accepted — any other inherited wildcard (like `**`) is rejected. After applying rules, the launcher reads the policy back and probes a host beneath each wildcard, each exact host, lookalike domains (`amazonaws.com.example.com`), private/metadata addresses, and an in-VM proxy denial before handing over credentials — there is no skip-policy fallback. Host-wide policy/SSH changes affect other sessions, hence the dedicated setup.
+After applying rules, the launcher reads the policy back and probes a host beneath each wildcard and each exact host before handing over credentials — there is no skip-policy fallback. When your policy blocks `example.com`, it also checks from inside the sandbox that the proxy denies it.
 
-**`**.amazonaws.com` is a deliberate trade-off.** Besides AWS APIs, it admits hosts any AWS customer controls — EC2 public DNS, load balancers, API Gateway, S3 buckets, RDS/OpenSearch endpoints — so an agent could send data it reads to a server someone else runs on AWS. The restricted, read-only, short-lived role is the main control; the allowlist doesn't prevent exfiltration within AWS. Replace `awsDomains` wildcards with exact hosts if that matters for your use. Organizations data is only readable from the management or a delegated administrator account. Package registries, Git hosts, and LAN destinations aren't enabled — install needed dependencies in a reviewed template.
+**Egress is not a hard boundary.** `**.amazonaws.com` admits hosts any AWS customer controls — EC2 public DNS, load balancers, API Gateway, S3 buckets, RDS/OpenSearch endpoints — so an agent could send data it reads to a server someone else runs on AWS, and allowed model endpoints receive whatever the agent reads. Your own policy adds whatever it allows (typically Git hosts and package registries). The restricted, read-only, short-lived role is the main control; replace `awsDomains` wildcards with exact hosts if egress matters for your use. Organizations data is only readable from the management or a delegated administrator account.
 
 Resume applies the current list to an existing sandbox before checking it, so allowlist changes take effect on the next resume.
 

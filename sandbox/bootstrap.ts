@@ -14,13 +14,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const sessionDir = join(homedir(), ".readonly-session");
-// sbx sets GH_TOKEN in every sandbox to a proxy placeholder shaped like a real
-// token. sbx never places service credentials in the sandbox; its proxy swaps
-// them in on the wire only for stored secrets. The host rejects a stored
-// github secret and the allowlist admits no GitHub host, so the value is inert
-// whatever it is. It is tolerated here, not matched against a version-specific
-// constant, and unset for the agent's session.
-const sbxProxyPlaceholders = ["GH_TOKEN"];
 // Shared skills are disabled at creation, but since sbx 0.46.0 kits may still
 // write into these directories. The template installs none.
 const skillDirs = [".claude/skills", ".codex/skills", ".agents/skills"];
@@ -64,25 +57,21 @@ try {
     for (const tool of ["aws", "git", "jq", "mise"]) execute(tool, ["--version"]);
     // A Docker socket inside this VM is not the host socket. Host mounts are
     // independently checked via sbx inspect before credential injection.
-    // sbx sets SSH_AUTH_SOCK even with forwarding disabled; only a socket that
-    // actually exists could expose a host SSH agent.
-    const agentSockets = [process.env.SSH_AUTH_SOCK, "/run/ssh-agent.sock"];
-    if (agentSockets.some((socket) => socket && existsSync(socket)))
-      throw new Error("Host SSH agent socket is present in fresh sandbox.");
     if (
       existsSync(join(homedir(), ".aws", "credentials")) ||
       existsSync(join(homedir(), ".aws", "config"))
     )
       throw new Error("Unexpected AWS files in fresh sandbox.");
+    // Access sbx grants besides AWS (SSH_AUTH_SOCK, and GH_TOKEN, a proxy
+    // placeholder whose stored github secret sbx swaps in on the wire) is the
+    // developer's own setup, reported on the host and left in place here.
     for (const key of [
       "AWS_ACCESS_KEY_ID",
       "AWS_SECRET_ACCESS_KEY",
       "AWS_SESSION_TOKEN",
       "AWS_PROFILE",
-      "GH_TOKEN",
-      "GITHUB_TOKEN",
     ]) {
-      if (process.env[key] && !sbxProxyPlaceholders.includes(key))
+      if (process.env[key])
         throw new Error("Unexpected inherited credential/provider environment.");
     }
     for (const dir of skillDirs.map((path) => join(homedir(), path)))
@@ -129,7 +118,7 @@ try {
       throw new Error("Invalid session credential path.");
     writeFileSync(
       envFile,
-      "unset SSH_AUTH_SOCK GH_TOKEN GITHUB_TOKEN AWS_PROFILE AWS_DEFAULT_PROFILE AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI\n" +
+      "unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI\n" +
         Object.entries(awsEnv)
           .map(([k, v]) => `export ${k}=${quote(String(v))}`)
           .join("\n") +

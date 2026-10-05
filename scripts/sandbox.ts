@@ -6,9 +6,10 @@ import { buildTemplate, configuration, destroy, doctor, launch, resume } from ".
 import { agents, validateName } from "./lib/state.ts";
 
 const help = `Usage:
-  mise run sbx run <agent> [PATH] --profile NAME [aws options]
-      Launch an agent with a restricted AWS session; PATH is mounted for host edits
-      (default: disposable empty workspace).
+  mise run sbx run <agent> [PATH] [--profile NAME] [aws options]
+      Launch an agent from this launcher's template, with a restricted AWS session when
+      --profile is given; PATH is mounted for host edits (default: disposable empty
+      workspace).
   mise run sbx run --name <sandbox> [<agent>]
       Reattach to a managed sandbox from anywhere, renewing its AWS session when under
       15 minutes remain. <agent> is optional and only confirms it matches the sandbox.
@@ -17,16 +18,20 @@ const help = `Usage:
   mise run sbx <any other sbx command>
       Passed to sbx unchanged (ls, stop, ...).
 
-  mise run preview <agent> [PATH] --profile NAME [aws options]
-  mise run doctor --profile NAME [--agent AGENT] [aws options]
+  mise run preview <agent> [PATH] [--profile NAME] [aws options]
+  mise run doctor [--profile NAME] [aws options]
   mise run build <agent>
   mise run build_all
 
 AWS options:
-  --profile NAME          Account profile supplying role_arn, source_profile and region
+  --profile NAME          Account profile supplying role_arn, source_profile and region;
+                          without it the sandbox gets no AWS session or AWS domains
   --source-profile NAME   Override the account profile's immediate source_profile
   --role NAME_OR_PATH     Restricted role to assume (default ReadOnlyRole)
   --region REGION         Override the account profile's region
+
+This project's hosts are added to your existing sbx network policy (balanced is
+recommended); SSH agent forwarding, stored secrets and MCP servers are reported.
 
 With Node directly: node scripts/sandbox.ts <sbx|preview|doctor|build> ...
 Preview reads local profile metadata only; it does not run credential processes.
@@ -49,13 +54,18 @@ function managed(name: string | undefined): name is string {
   }
 }
 
+// No profile means no AWS session; the other AWS options then have nothing to modify.
 async function target(values: {
   profile?: string;
   "source-profile"?: string;
   role?: string;
   region?: string;
 }) {
-  if (!values.profile) throw new Error(`--profile is required.\n${help}`);
+  if (!values.profile) {
+    if (values["source-profile"] || values.role || values.region)
+      throw new Error(`--source-profile, --role and --region require --profile.\n${help}`);
+    return undefined;
+  }
   return selectTarget(await readProfiles(), values.profile, {
     sourceProfile: values["source-profile"],
     role: values.role,
@@ -63,7 +73,7 @@ async function target(values: {
   });
 }
 
-// <agent> [PATH] --profile NAME, shared by sbx run and preview.
+// <agent> [PATH] [--profile NAME], shared by sbx run and preview.
 async function launchArgs(args: string[]) {
   const { values, positionals } = parseArgs({
     args,
@@ -77,7 +87,11 @@ async function launchArgs(args: string[]) {
     throw new Error(`Unsupported agent. Supported: ${agents.join(", ")}.`);
   // mise runs tasks from the launcher root; resolve PATH like sbx would, from the caller's directory.
   const base = process.env.MISE_ORIGINAL_CWD ?? process.cwd();
-  return { agent, project: project && resolve(base, project), target: await target(values) };
+  return {
+    agent,
+    project: project && resolve(base, project),
+    target: await target(values),
+  };
 }
 
 async function passThrough(args: string[]): Promise<void> {
@@ -105,7 +119,10 @@ async function sbx(args: string[]): Promise<void> {
       const consumed = flag === "--name" ? 2 : 1;
       const positionals = [...rest.slice(0, nameIndex), ...rest.slice(nameIndex + consumed)];
       if (managed(name)) {
-        if (positionals.length > 1 || (positionals.length === 1 && !agents.includes(positionals[0])))
+        if (
+          positionals.length > 1 ||
+          (positionals.length === 1 && !agents.includes(positionals[0]))
+        )
           throw new Error(
             `Reattach takes only --name <sandbox>, with an optional agent to confirm it.\n${help}`,
           );
@@ -144,7 +161,7 @@ export async function main(args: string[]): Promise<void> {
       JSON.stringify(
         {
           agent,
-          ...target,
+          ...(target ?? { profile: null }),
           workspaceMode: project ? "mounted" : "empty",
           project: project ?? null,
         },
@@ -159,13 +176,10 @@ export async function main(args: string[]): Promise<void> {
       args: rest,
       allowPositionals: true,
       strict: true,
-      options: { ...awsOptions, agent: { type: "string" } },
+      options: awsOptions,
     });
     if (positionals.length) throw new Error(`doctor takes only options.\n${help}`);
-    const agent = values.agent ?? agents[0];
-    if (!agents.includes(agent))
-      throw new Error(`Unsupported agent. Supported: ${agents.join(", ")}.`);
-    await doctor(await target(values), agent);
+    await doctor(await target(values));
     return;
   }
   if (command === "build") {

@@ -4,7 +4,7 @@ import {
   auditPolicy,
   blockedProbes,
   destinations,
-  policyChanges,
+  missingAllows,
   probes,
 } from "../scripts/lib/network.ts";
 import type { Target } from "../scripts/lib/profiles.ts";
@@ -16,56 +16,31 @@ const allow = (resources: string[]) => ({
   actions: ["net:connect:tcp"],
   resources,
 });
-test("rejects wildcard, UDP, unapproved endpoints and unknown policy schema", () => {
-  for (const resource of ["**", "*.amazonaws.com:443", "github.com:443", "api.example.com:80"])
-    assert.throws(
-      () => auditPolicy({ rules: [allow([resource])] }, ["api.example.com:443"]),
-      /outside/,
-    );
+test("accepts the developer's other allows but never allow-all", () => {
+  auditPolicy({
+    rules: [
+      allow(["github.com:443", "*.npmjs.org:443", "registry.example.com:443"]),
+      { ...allow(["**"]), status: "inactive" },
+      { ...allow(["**"]), decision: "deny" },
+    ],
+  });
+  for (const resource of ["*", "**", "**:443", "*:443", "0.0.0.0/0", "::/0"])
+    assert.throws(() => auditPolicy({ rules: [allow([resource])] }), /every destination/);
+});
+test("rejects unknown policy status, rule shape and schema", () => {
   assert.throws(
-    () =>
-      auditPolicy(
-        { rules: [{ ...allow(["api.example.com:443"]), actions: ["net:connect:udp"] }] },
-        ["api.example.com:443"],
-      ),
-    /outside/,
-  );
-  assert.throws(
-    () => auditPolicy({ rules: [{ ...allow(["**"]), status: "unknown" }] }, []),
+    () => auditPolicy({ rules: [{ ...allow(["github.com:443"]), status: "unknown" }] }),
     /Unknown policy status/,
   );
-  assert.throws(() => auditPolicy({}, []), /schema/);
-});
-test("accepts exact TCP destinations, restrictive denies and inactive broad rules", () => {
-  auditPolicy(
-    {
-      rules: [
-        allow(["api.example.com:443"]),
-        { ...allow(["**"]), status: "inactive" },
-        { ...allow(["169.254.169.254"]), decision: "deny" },
-      ],
-    },
-    ["api.example.com:443"],
-  );
-});
-test("accepts a kit endpoint only after a matching scoped deny; wildcard subtraction remains forbidden", () => {
-  auditPolicy(
-    { rules: [allow(["github.com:443"]), { ...allow(["github.com:443"]), decision: "deny" }] },
-    [],
+  assert.throws(
+    () => auditPolicy({ rules: [{ ...allow(["github.com:443"]), resource_type: "fs" }] }),
+    /resource type/,
   );
   assert.throws(
-    () =>
-      auditPolicy(
-        {
-          rules: [
-            allow(["*.example.com:443"]),
-            { ...allow(["*.example.com:443"]), decision: "deny" },
-          ],
-        },
-        [],
-      ),
-    /outside/,
+    () => auditPolicy({ rules: [{ ...allow(["github.com:443"]), decision: "ask" }] }),
+    /Unsupported/,
   );
+  assert.throws(() => auditPolicy({}), /schema/);
 });
 test("builds agent, shared and partition AWS domains; rejects malformed entries", () => {
   const config = {
@@ -93,103 +68,45 @@ test("builds agent, shared and partition AWS domains; rejects malformed entries"
   ])
     assert.throws(() => destinations({ agents: { claude: [bad] } }, "claude", target), /DNS/);
 });
-test("approved wildcards admit hosts beneath them; broader wildcards stay forbidden", () => {
-  const allowed = ["**.amazonaws.com:443", "*.example.org:443"];
-  // The literal approved wildcard, and exact hosts beneath it (for example an
-  // older sandbox's per-service rules), pass the audit.
-  auditPolicy(
-    {
-      rules: [
-        allow([
-          "**.amazonaws.com:443",
-          "sts.us-west-2.amazonaws.com:443",
-          "amazonaws.com:443",
-          "a.example.org:443",
-        ]),
-      ],
-    },
-    allowed,
-  );
-  for (const resource of [
-    "**:443",
-    "**.com:443",
-    "*.amazonaws.com.evil.com:443",
-    "a.b.example.org:443",
-    "sts.us-west-2.amazonaws.com:80",
-    "evilamazonaws.com:443",
-  ])
-    assert.throws(() => auditPolicy({ rules: [allow([resource])] }, allowed), /outside/);
-  // Hosts the wildcard admits are neither re-added nor denied; others are denied.
-  assert.deepEqual(
-    policyChanges(
-      {
-        rules: [
-          allow([
-            "**.amazonaws.com:443",
-            "sts.us-west-2.amazonaws.com:443",
-            "downloads.claude.ai:443",
-          ]),
-        ],
-      },
-      allowed,
-    ),
-    { allow: ["*.example.org:443"], deny: ["downloads.claude.ai:443"] },
-  );
+test("live probes cover each exact host and wildcard; metadata must stay blocked", () => {
+  const allowed = ["docs.aws.amazon.com:443", "**.amazonaws.com:443", "*.example.org:443"];
+  assert.deepEqual(probes(allowed), [
+    "docs.aws.amazon.com:443",
+    "probe.example.amazonaws.com:443",
+    "probe.example.org:443",
+  ]);
+  assert.deepEqual(blockedProbes, ["169.254.169.254:80", "[fd00:ec2::254]:80"]);
 });
-test("live probes cover each wildcard and its lookalikes", () => {
-  const allowed = ["docs.aws.amazon.com:443", "**.amazonaws.com:443"];
-  assert.deepEqual(probes(allowed), ["docs.aws.amazon.com:443", "probe.example.amazonaws.com:443"]);
-  const blocked = blockedProbes(allowed);
-  for (const probe of [
-    "example.com:443",
-    "169.254.169.254:80",
-    "amazonaws.com.example.com:443",
-    "exampleamazonaws.com:443",
-    "amazonaws.com:80",
-  ])
-    assert.ok(blocked.includes(probe), probe);
-});
-test("policy changes add missing allows and deny other exact allows exactly once", () => {
+test("missing allows are added exactly once and nothing is denied", () => {
   const rules = [
-    allow(["api.example.com:443", "github.com:443", "kit.example.com:443", "*.example.com:443"]),
-    { ...allow(["registry.example.com:443"]), status: "inactive" },
-    // Already denied on an earlier launch or resume: not denied again.
-    { ...allow(["kit.example.com:443"]), decision: "deny" },
+    allow(["api.example.com:443", "github.com:443"]),
+    { ...allow(["logs.example.com:443"]), status: "inactive" },
   ];
-  assert.deepEqual(policyChanges({ rules }, ["api.example.com:443", "logs.example.com:443"]), {
-    allow: ["logs.example.com:443"],
-    deny: ["github.com:443"],
-  });
-  assert.throws(() => policyChanges({}, []), /schema/);
+  assert.deepEqual(missingAllows({ rules }, ["api.example.com:443", "logs.example.com:443"]), [
+    "logs.example.com:443",
+  ]);
+  assert.throws(() => missingAllows({}, []), /schema/);
 });
-test("rules scoped to other sandboxes neither fail nor protect this sandbox", () => {
+test("rules scoped to other sandboxes are ignored", () => {
   const scoped = (sandbox: string, rule: ReturnType<typeof allow>) => ({
     ...rule,
     applies_to: `sandbox:${sandbox}`,
   });
-  const other = scoped("ro-claude-000000000000", allow(["api.anthropic.com:443"]));
-  // Before creation, another session's allowlist does not apply to a new sandbox.
-  auditPolicy({ rules: [other] }, ["api.openai.com:443"]);
-  auditPolicy({ rules: [other] }, ["api.openai.com:443"], "ro-codex-000000000000");
+  const other = scoped("ro-claude-000000000000", allow(["**"]));
+  // Before creation, another sandbox's rules do not apply to a new sandbox.
+  auditPolicy({ rules: [other] });
+  auditPolicy({ rules: [other] }, "ro-codex-000000000000");
   // The same rule applies when auditing its own sandbox.
-  assert.throws(
-    () => auditPolicy({ rules: [other] }, ["api.openai.com:443"], "ro-claude-000000000000"),
-    /outside/,
+  assert.throws(() => auditPolicy({ rules: [other] }, "ro-claude-000000000000"), /every/);
+  // Another sandbox's allow does not satisfy this sandbox's allowlist.
+  const mine = scoped("ro-codex-000000000000", allow(["api.openai.com:443"]));
+  const theirs = scoped("ro-claude-000000000000", allow(["api.anthropic.com:443"]));
+  assert.deepEqual(
+    missingAllows(
+      { rules: [mine, theirs] },
+      ["api.openai.com:443", "api.anthropic.com:443"],
+      "ro-codex-000000000000",
+    ),
+    ["api.anthropic.com:443"],
   );
-  // A deny scoped to another sandbox cannot neutralize this sandbox's allow.
-  const mine = scoped("ro-codex-000000000000", allow(["github.com:443"]));
-  const foreignDeny = scoped("ro-claude-000000000000", {
-    ...allow(["github.com:443"]),
-    decision: "deny",
-  });
-  assert.throws(
-    () => auditPolicy({ rules: [mine, foreignDeny] }, [], "ro-codex-000000000000"),
-    /outside/,
-  );
-  // Unscoped (global) allows always count.
-  assert.throws(() => auditPolicy({ rules: [allow(["github.com:443"])] }, []), /outside/);
-  assert.deepEqual(policyChanges({ rules: [other, mine] }, [], "ro-codex-000000000000"), {
-    allow: [],
-    deny: ["github.com:443"],
-  });
 });

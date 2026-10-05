@@ -2,10 +2,10 @@
   "minSbxVersion": "0.46.0",
   "templates": {
     "claude": {
-      "tag": "readonly-agent-claude:0.1.0"
+      "tag": "readonly-agent-claude:0.2.0"
     },
     "codex": {
-      "tag": "readonly-agent-codex:0.1.0"
+      "tag": "readonly-agent-codex:0.2.0"
     }
   }
 }

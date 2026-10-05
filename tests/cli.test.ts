@@ -78,13 +78,15 @@ test("CLI rejects unsupported options and malformed commands", posixOnly, () =>
       ["sbx", "run", "unknown", "--profile", "demo"],
       ["sbx", "run", "claude", "--profile", "demo", "--force"],
       ["sbx", "run", "claude", "/a", "/b", "--profile", "demo"],
-      ["sbx", "run", "claude", "/a"],
+      ["sbx", "run", "claude", "/a", "--role", "OtherRole"],
+      ["sbx", "run", "claude", "--network", "strict"],
       ["sbx", "run", "--name", "ro-claude-0123456789ab", "codex", "extra"],
       ["sbx", "run", "--name", "ro-claude-0123456789ab", "unknown-agent"],
       ["sbx", "rm", "ro-claude-0123456789ab", "other"],
       ["build", "claude", "extra"],
       ["build"],
       ["doctor", "demo"],
+      ["doctor", "--agent", "claude"],
       ["launch", "claude", "demo"],
     ])
       assert.equal(cli(args, env), 1, args.join(" "));
@@ -93,19 +95,25 @@ test("CLI rejects unsupported options and malformed commands", posixOnly, () =>
 
 // --name is recognized wherever it appears in the args, and whether or not it
 // names a sandbox this launcher manages; only the latter changes what happens.
-test("--name is recognized regardless of position, but only a managed name is intercepted", posixOnly, () =>
-  withFakeSbx((env) => {
-    for (const args of [
-      ["run", "--name", "ro-claude-0123456789ab"],
-      ["run", "--name", "ro-claude-0123456789ab", "claude"],
-      ["run", "claude", "--name", "ro-claude-0123456789ab"],
-      ["run", "--name=ro-claude-0123456789ab", "claude"],
-    ])
+test(
+  "--name is recognized regardless of position, but only a managed name is intercepted",
+  posixOnly,
+  () =>
+    withFakeSbx((env) => {
       // Intercepted: fails on the host check (no real aws/sbx here), not sbx's exit 7.
-      assert.equal(cli(["sbx", ...args], env), 1, args.join(" "));
-    for (const args of [["run", "--name", "someone-else"], ["run", "claude", "--name", "someone-else"]])
-      assert.equal(cli(["sbx", ...args], env), 7, args.join(" "));
-  }),
+      for (const args of [
+        ["run", "--name", "ro-claude-0123456789ab"],
+        ["run", "--name", "ro-claude-0123456789ab", "claude"],
+        ["run", "claude", "--name", "ro-claude-0123456789ab"],
+        ["run", "--name=ro-claude-0123456789ab", "claude"],
+      ])
+        assert.equal(cli(["sbx", ...args], env), 1, args.join(" "));
+      for (const args of [
+        ["run", "--name", "someone-else"],
+        ["run", "claude", "--name", "someone-else"],
+      ])
+        assert.equal(cli(["sbx", ...args], env), 7, args.join(" "));
+    }),
 );
 
 test("unmanaged sbx commands pass through to sbx unchanged", posixOnly, () =>

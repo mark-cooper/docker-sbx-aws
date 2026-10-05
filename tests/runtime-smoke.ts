@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hostEnvironment, run, successful } from "../scripts/lib/process.ts";
-import { checkSbxVersion, configuration, unexpectedSecrets } from "../scripts/lib/sandbox.ts";
+import { checkSbxVersion, configuration } from "../scripts/lib/sandbox.ts";
 
 const env = hostEnvironment();
 const dir = await mkdtemp(join(tmpdir(), "readonly-runtime-"));
@@ -26,9 +26,6 @@ try {
     await mkdir(project);
     await writeFile(join(project, "example.txt"), "initial\n");
     const name = `readonly-test-${agent}-${randomBytes(6).toString("hex")}`;
-    // Same host-side guard as launch: stored secrets are injected into every sandbox.
-    const secrets = unexpectedSecrets(JSON.parse(await call("sbx", ["secret", "ls", "--json"])));
-    if (secrets.length) throw new Error(`Remove stored sbx secrets first: ${secrets.join(", ")}`);
     try {
       await call("sbx", [
         "create",
@@ -134,7 +131,7 @@ try {
       const verify = join(dir, `verify-${agent}.ts`);
       await writeFile(
         verify,
-        'import assert from "node:assert/strict";import{statSync}from"node:fs";assert.equal(process.env.AWS_ACCESS_KEY_ID,process.argv[2]);assert.equal(process.env.AWS_PROFILE,undefined);assert.equal(process.env.SSH_AUTH_SOCK,undefined);assert.equal(process.env.GH_TOKEN,undefined);assert.equal(statSync("/home/agent/.readonly-session/aws.sh").mode & 0o777,0o600);console.log("session-ok");',
+        'import assert from "node:assert/strict";import{statSync}from"node:fs";assert.equal(process.env.AWS_ACCESS_KEY_ID,process.argv[2]);assert.equal(process.env.AWS_PROFILE,undefined);assert.equal(statSync("/home/agent/.readonly-session/aws.sh").mode & 0o777,0o600);console.log("session-ok");',
       );
       await call("sbx", ["cp", verify, `${name}:/tmp/verify.ts`]);
       // Launch, then a resume-style renewal: new shells see the renewed session
