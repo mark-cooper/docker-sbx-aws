@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { configuration } from "../scripts/lib/config.ts";
+import { blockedHosts } from "../scripts/lib/network.ts";
 import type { Runner, RunOptions } from "../scripts/lib/process.ts";
 import type { Target } from "../scripts/lib/profiles.ts";
 import {
@@ -43,6 +44,7 @@ async function fixture(
       forwarding: boolean;
       mcpServers: number;
       allowExample: boolean;
+      dropDenies: boolean;
       otherSandboxes: string[];
       secrets: { scope: string; type: string; name: string }[];
     };
@@ -61,6 +63,8 @@ async function fixture(
       forwarding: false,
       mcpServers: 0,
       allowExample: false,
+      // Stands in for an sbx that does not record the deny rules it is given.
+      dropDenies: false,
       otherSandboxes: [] as string[],
       secrets: [] as { scope: string; type: string; name: string }[],
     };
@@ -68,8 +72,9 @@ async function fixture(
     agent = "",
     mounted = false,
     identity = {};
-  // Sandbox-scoped allows the launcher has added, as sbx would record them.
+  // Sandbox-scoped rules the launcher has added, as sbx would record them.
   const sandboxAllows = new Set<string>();
+  const sandboxDenies = new Set<string>();
   const run: Runner = async (tool, args, options = {}) => {
     calls.push({ tool, args, options });
     let result: unknown = "";
@@ -132,7 +137,10 @@ async function fixture(
       };
     else if (args[0] === "policy" && args[1] === "allow")
       for (const resource of args.at(-1)!.split(",")) sandboxAllows.add(resource);
-    else if (args[0] === "policy" && args[1] === "ls")
+    else if (args[0] === "policy" && args[1] === "deny") {
+      if (!control.dropDenies)
+        for (const resource of args.at(-1)!.split(",")) sandboxDenies.add(resource);
+    } else if (args[0] === "policy" && args[1] === "ls")
       result = {
         rules: control.broadPolicy
           ? [
@@ -145,10 +153,13 @@ async function fixture(
               },
             ]
           : args[2] === name
-            ? [...sandboxAllows].map((resource) => ({
+            ? [
+                ...[...sandboxAllows].map((resource) => ["allow", resource]),
+                ...[...sandboxDenies].map((resource) => ["deny", resource]),
+              ].map(([decision, resource]) => ({
                 resource_type: "network",
                 status: "active",
-                decision: "allow",
+                decision,
                 actions: ["net:connect:tcp"],
                 resources: [resource],
                 applies_to: `sandbox:${name}`,
@@ -161,14 +172,18 @@ async function fixture(
       // any subdomain on the same port.
       const probe = args.at(-1)!;
       // allowExample stands in for a developer's broader default policy.
+      // A deny without a port covers every port and wins over any allow.
+      const host = probe.replace(/:\d+$/, "").replace(/^\[(.*)\]$/, "$1");
       const allowed =
-        (control.allowExample && probe === "example.com:443") ||
-        [...sandboxAllows].some(
-          (rule) =>
-            rule === probe ||
-            (rule.startsWith("**.") &&
-              (probe === rule.slice(3) || probe.endsWith(`.${rule.slice(3)}`))),
-        );
+        !sandboxDenies.has(host) &&
+        !sandboxDenies.has(`${host}/128`) &&
+        ((control.allowExample && probe === "example.com:443") ||
+          [...sandboxAllows].some(
+            (rule) =>
+              rule === probe ||
+              (rule.startsWith("**.") &&
+                (probe === rule.slice(3) || probe.endsWith(`.${rule.slice(3)}`))),
+          ));
       result = { allowed, target: args.at(-1) };
       if (!allowed) code = 1;
     } else if (args[0] === "exec") {
@@ -213,8 +228,11 @@ test("launch orders checks before handoff, keeps secrets on stdin, and mounts th
       calls.findIndex((c) => c.args.at(-1) === "probe-network") <
         calls.findIndex((c) => c.args.at(-1) === "inject"),
     );
-    // The allowlist is added in one call.
+    // The allowlist is added in one call, and so are the metadata denies.
     assert.equal(calls.filter((c) => c.args[1] === "allow").length, 1);
+    const denies = calls.filter((c) => c.args[0] === "policy" && c.args[1] === "deny");
+    assert.equal(denies.length, 1);
+    assert.deepEqual(denies[0].args.slice(3), ["--sandbox", name, blockedHosts.join(",")]);
     assert.ok(
       calls.findIndex((c) => c.args.at(-1) === "inject") <
         calls.findIndex((c) => c.args[0] === "run"),
@@ -228,13 +246,19 @@ test("launch orders checks before handoff, keeps secrets on stdin, and mounts th
     await destroy(name, run);
     assert.equal((await loadState(name)).phase, "destroyed");
   }));
+test("a launch stops before handoff when the metadata denies are not recorded", async () =>
+  fixture(async ({ run, calls, control }) => {
+    control.dropDenies = true;
+    await assert.rejects(launch(target, { agent: "claude" }, run), /metadata deny/);
+    assert.ok(!calls.some((c) => c.args.at(-1) === "inject" || c.args[0] === "run"));
+  }));
 test("allow-all host policy stops before creating a sandbox or contacting AWS STS", async () =>
   fixture(async ({ project, run, calls, control }) => {
     control.broadPolicy = true;
     await assert.rejects(launch(target, { agent: "claude", project }, run), /every destination/);
     assert.ok(!calls.some((c) => c.args[0] === "create" || c.args[0] === "sts"));
   }));
-test("the host setup is tolerated, extra grants are reported, and nothing is denied", async () =>
+test("the host setup is tolerated, extra grants are reported, and only metadata is denied", async () =>
   fixture(async ({ run, calls, control }) => {
     control.secrets = [{ scope: "global", type: "service", name: "github" }];
     control.forwarding = true;
@@ -251,7 +275,10 @@ test("the host setup is tolerated, extra grants are reported, and nothing is den
     const grants = warnings.find((w) => w.includes("besides the restricted AWS session"))!;
     for (const grant of ["SSH agent forwarding", '"github"', "MCP server"])
       assert.ok(grants.includes(grant), grant);
-    assert.ok(!calls.some((c) => c.args[1] === "deny"));
+    const denied = calls
+      .filter((c) => c.args[0] === "policy" && c.args[1] === "deny")
+      .flatMap((c) => c.args.at(-1)!.split(","));
+    assert.deepEqual(denied, blockedHosts);
     // Metadata is still checked; example.com is allowed, so no in-VM denial probe.
     assert.ok(calls.some((c) => c.args[1] === "check" && c.args.at(-1) === "169.254.169.254:80"));
     assert.ok(!calls.some((c) => c.args.at(-1) === "probe-network"));

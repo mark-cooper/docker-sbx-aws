@@ -5,7 +5,14 @@ import type { Session } from "./aws.ts";
 import { assumeRestrictedRole, validateLifetime } from "./aws.ts";
 import type { Runtime } from "./config.ts";
 import { configuration, modelSecrets, root } from "./config.ts";
-import { auditPolicy, blockedProbes, destinations, missingAllows, probes } from "./network.ts";
+import {
+  auditPolicy,
+  blockedHosts,
+  blockedProbes,
+  destinations,
+  missingRules,
+  probes,
+} from "./network.ts";
 import type { Runner, RunOptions } from "./process.ts";
 import { run as execute, hostEnvironment, json, successful } from "./process.ts";
 import type { Target } from "./profiles.ts";
@@ -206,21 +213,29 @@ async function probeInside(run: Runner, name: string): Promise<void> {
   if (await admitted(run, name, "example.com:443")) return;
   await inside(run, name, "probe-network");
 }
-// Add this project's allows for this sandbox only, on top of the developer's
-// policy. On resume this also adds hosts since added to the allowlist. The
-// result is audited and checked destination by destination either way.
+// Add this project's allows, and the metadata denies, for this sandbox only,
+// on top of the developer's policy. On resume this also adds hosts since added
+// to the allowlist. The result is audited and checked destination by
+// destination either way. Default deny already blocks metadata, so the denies
+// are confirmed in the listed policy rather than by the checks.
 async function applyNetworkPolicy(run: Runner, name: string, allowed: string[]): Promise<void> {
   let policy = await listPolicy(run, name);
-  const missing = missingAllows(policy, allowed, name);
-  if (missing.length) {
+  const missing = {
+    allow: missingRules(policy, "allow", allowed, name),
+    deny: missingRules(policy, "deny", blockedHosts, name),
+  };
+  for (const decision of ["allow", "deny"] as const) {
+    if (!missing[decision].length) continue;
     await sbx(
       run,
-      ["policy", "allow", "network", "--sandbox", name, missing.join(",")],
-      "Sandbox network allow rules",
+      ["policy", decision, "network", "--sandbox", name, missing[decision].join(",")],
+      `Sandbox network ${decision} rules`,
     );
-    policy = await listPolicy(run, name);
   }
+  if (missing.allow.length || missing.deny.length) policy = await listPolicy(run, name);
   auditPolicy(policy, name);
+  if (missingRules(policy, "deny", blockedHosts, name).length)
+    throw new Error("Instance metadata deny rules are missing from the network policy.");
   await checkNetwork(run, name, allowed);
 }
 function sandboxNames(list: { sandboxes?: { name?: string }[] }): string[] {

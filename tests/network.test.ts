@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   auditPolicy,
+  blockedHosts,
   blockedProbes,
   destinations,
-  missingAllows,
+  missingRules,
   probes,
 } from "../scripts/lib/network.ts";
 import type { Target } from "../scripts/lib/profiles.ts";
@@ -75,17 +76,26 @@ test("live probes cover each exact host and wildcard; metadata must stay blocked
     "probe.example.amazonaws.com:443",
     "probe.example.org:443",
   ]);
+  assert.deepEqual(blockedHosts, ["169.254.169.254", "fd00:ec2::254/128"]);
   assert.deepEqual(blockedProbes, ["169.254.169.254:80", "[fd00:ec2::254]:80"]);
 });
-test("missing allows are added exactly once and nothing is denied", () => {
+test("missing rules are added exactly once, per decision", () => {
   const rules = [
     allow(["api.example.com:443", "github.com:443"]),
     { ...allow(["logs.example.com:443"]), status: "inactive" },
   ];
-  assert.deepEqual(missingAllows({ rules }, ["api.example.com:443", "logs.example.com:443"]), [
-    "logs.example.com:443",
-  ]);
-  assert.throws(() => missingAllows({}, []), /schema/);
+  assert.deepEqual(
+    missingRules({ rules }, "allow", ["api.example.com:443", "logs.example.com:443"]),
+    ["logs.example.com:443"],
+  );
+  // An allow never stands in for a deny of the same resource.
+  const deny = { ...allow(["169.254.169.254"]), decision: "deny" };
+  assert.deepEqual(missingRules({ rules: [deny] }, "deny", blockedHosts), ["fd00:ec2::254/128"]);
+  assert.deepEqual(
+    missingRules({ rules: [allow(blockedHosts)] }, "deny", blockedHosts),
+    blockedHosts,
+  );
+  assert.throws(() => missingRules({}, "allow", []), /schema/);
 });
 test("rules scoped to other sandboxes are ignored", () => {
   const scoped = (sandbox: string, rule: ReturnType<typeof allow>) => ({
@@ -102,8 +112,9 @@ test("rules scoped to other sandboxes are ignored", () => {
   const mine = scoped("ro-codex-000000000000", allow(["api.openai.com:443"]));
   const theirs = scoped("ro-claude-000000000000", allow(["api.anthropic.com:443"]));
   assert.deepEqual(
-    missingAllows(
+    missingRules(
       { rules: [mine, theirs] },
+      "allow",
       ["api.openai.com:443", "api.anthropic.com:443"],
       "ro-codex-000000000000",
     ),

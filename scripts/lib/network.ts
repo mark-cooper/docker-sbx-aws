@@ -45,8 +45,14 @@ export function probes(allowed: string[]): string[] {
 }
 // Cloud instance metadata would hand the agent the host's own credentials,
 // bypassing the restricted role, so it must stay blocked whatever the
-// developer's own policy allows.
-export const blockedProbes = ["169.254.169.254:80", "[fd00:ec2::254]:80"];
+// developer's own policy allows. Each sandbox gets an explicit deny (all
+// ports), so a pending approval can never be granted for it. sbx takes a
+// bare IPv4 address for every port, but an IPv6 one only as a /128 CIDR, and
+// lists each exactly as given.
+export const blockedHosts = ["169.254.169.254", "fd00:ec2::254/128"];
+export const blockedProbes = blockedHosts.map((host) =>
+  host.includes(":") ? `[${host.replace(/\/128$/, "")}]:80` : `${host}:80`,
+);
 
 // Rules that can affect the given sandbox, or any new sandbox when omitted.
 // Rules scoped to other sandboxes are dropped before audit, so their allows
@@ -62,16 +68,21 @@ function policyRules(value: unknown, sandbox?: string): Rule[] {
   );
 }
 
-// Approved entries the sandbox's policy does not yet allow. The project's
-// allows are layered on the developer's own policy, which is never narrowed.
-// Existing rules are never duplicated.
-export function missingAllows(value: unknown, allowed: string[], sandbox?: string): string[] {
-  const allows = new Set(
+// Resources the sandbox's policy does not yet allow (or deny). The project's
+// rules are layered on the developer's own policy; only metadata is ever
+// denied. Existing rules are never duplicated.
+export function missingRules(
+  value: unknown,
+  decision: "allow" | "deny",
+  resources: string[],
+  sandbox?: string,
+): string[] {
+  const present = new Set(
     policyRules(value, sandbox)
-      .filter((rule) => rule.status === "active" && rule.decision === "allow")
+      .filter((rule) => rule.status === "active" && rule.decision === decision)
       .flatMap((rule) => (Array.isArray(rule.resources) ? rule.resources : [])),
   );
-  return allowed.filter((resource) => !allows.has(resource));
+  return resources.filter((resource) => !present.has(resource));
 }
 
 // A rule admitting every destination removes the proxy as a control.
