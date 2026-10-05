@@ -7,27 +7,12 @@
       "claude.ai",
       "console.anthropic.com"
     ],
-    "codex": [
-      "api.openai.com",
-      "auth.openai.com",
-      "chatgpt.com"
-    ]
+    "codex": ["api.openai.com", "auth.openai.com", "chatgpt.com"]
   },
-  "hosts": [
-    "docs.aws.amazon.com",
-    "docs.docker.com"
-  ],
+  "hosts": ["docs.aws.amazon.com", "docs.docker.com"],
   "awsDomains": {
-    "aws": [
-      "**.amazonaws.com",
-      "**.api.aws"
-    ],
-    "aws-us-gov": [
-      "**.amazonaws.com",
-      "**.api.aws"
-    ],
-    "aws-cn": [
-      "**.amazonaws.com.cn"
-    ]
+    "aws": ["**.amazonaws.com", "**.api.aws"],
+    "aws-us-gov": ["**.amazonaws.com", "**.api.aws"],
+    "aws-cn": ["**.amazonaws.com.cn"]
   }
 }
