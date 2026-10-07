@@ -10,14 +10,24 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
 COPY --from=aws /usr/local/aws-cli /usr/local/aws-cli
 COPY sandbox/bootstrap.ts /opt/readonly-sandbox/bootstrap.ts
+# build-essential onward: compilers and headers for building Ruby with mise
+# and the native gems Rails apps commonly need (pg, mysql2, sqlite3, psych).
 RUN ln -sf /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws \
  && apt-get update \
  && apt-get install -y --no-install-recommends libatomic1 \
+    build-essential pkg-config \
+    libssl-dev libyaml-dev libreadline-dev zlib1g-dev libgmp-dev libffi-dev \
+    libgdbm-dev libncurses-dev \
+    libpq-dev default-libmysqlclient-dev libsqlite3-dev \
  && rm -rf /var/lib/apt/lists/* \
  && printf '%s\n' 'case ":$PATH:" in *:/home/agent/.local/share/mise/shims:*) ;; *) export PATH="/home/agent/.local/share/mise/shims:$PATH" ;; esac' >> /etc/sandbox-persistent.sh
 # mise shims come first for the agent itself and, via the persistent file
 # above, for every shell, including login shells that reset PATH.
 ENV PATH=/home/agent/.local/share/mise/shims:$PATH
+# mise ignores .ruby-version, .node-version and rust-toolchain.toml by default.
+# Cargo builds into the VM, not a mounted project's target/ that host builds share.
+ENV MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS=ruby,node,rust \
+    CARGO_TARGET_DIR=/home/agent/.cache/cargo-target
 RUN node --version && aws --version && git --version && jq --version && mise --version
 USER agent
 WORKDIR /home/agent/workspace

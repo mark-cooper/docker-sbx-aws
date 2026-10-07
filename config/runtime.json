@@ -5,11 +5,11 @@
   "renewWithinSeconds": 900,
   "templates": {
     "claude": {
-      "tag": "readonly-agent-claude:0.3.0",
+      "tag": "readonly-agent-claude:0.4.0",
       "modelSecret": "anthropic"
     },
     "codex": {
-      "tag": "readonly-agent-codex:0.3.0",
+      "tag": "readonly-agent-codex:0.4.0",
       "modelSecret": "openai"
     }
   }

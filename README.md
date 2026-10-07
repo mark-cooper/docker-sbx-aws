@@ -113,7 +113,7 @@ Resume applies the current list to an existing sandbox before checking it, so al
 
 **Project mode** is selected by passing a path after the agent, mounting that directory for host edits — the agent can read and change files there immediately, including uncommitted and ignored ones. Don't choose a directory containing credentials or private keys; host home and its ancestors are rejected as project roots.
 
-In project mode the launcher runs `mise install` in the workspace on launch and on every resume, before any AWS session is handed over, so the project's mise tools are ready when the agent starts. If it fails, for example because the network policy blocks a download, you get a warning and the launch carries on; run `mise install` in the sandbox to see why. The templates put mise's shims first on PATH for the agent and for every shell, so `.tool-versions`, `.ruby-version` and `mise.toml` choose the versions without needing `mise activate`. Bootstrap commands run with the template's own Node, not a project's.
+In project mode the launcher runs `mise install` in the workspace on launch and on every resume, before any AWS session is handed over, so the project's mise tools are ready when the agent starts. If it fails, for example because the network policy blocks a download, you get a warning and the launch carries on; run `mise install` in the sandbox to see why. The templates put mise's shims first on PATH for the agent and for every shell, so `mise.toml`, `.tool-versions`, `.ruby-version`, `.node-version` and `rust-toolchain.toml` choose the versions without needing `mise activate` (the templates enable those idiomatic version files for Ruby, Node and Rust, which mise otherwise ignores). Bootstrap commands run with the template's own Node, not a project's.
 
 Like sbx, a sandbox is named `<agent>-<directory>` after the project directory, or after the current directory in empty mode (lowercased, with other characters replaced by hyphens); `--name` chooses any other lowercase name. Running the same launch again reattaches to that sandbox, but only if the agent, path and AWS profile, role and region all match — otherwise it is refused, so pick another `--name` or remove the old sandbox. A name already used by a sandbox this launcher didn't create is refused too.
 
@@ -130,6 +130,21 @@ Resume reattaches to a ready session, first repeating the host checks (sbx versi
 Destroy stops the active session and removes the sandbox. Mounted project files remain on the host; files created only in an empty sandbox are lost. Failed launches are stopped and retained for inspection. Only recorded launcher sessions can be destroyed through these tasks.
 
 Non-secret metadata lives under `~/.readonly-agent-sandbox` (override with `READONLY_SANDBOX_STATE_DIR`); credentials are never written to host state. Sessions from the previous clone/collect launcher must be collected or destroyed with that version before upgrading.
+
+## Running apps in the sandbox
+
+The templates include compilers (`build-essential`, `pkg-config`) and the headers to build Ruby with mise and the native gems Rails apps commonly use: OpenSSL, libyaml, readline, zlib, GMP, libffi, gdbm, ncurses, PostgreSQL (`pg`), MySQL (`mysql2`) and SQLite; Rust's linker and `openssl-sys` need nothing more. Cargo builds into `/home/agent/.cache/cargo-target` (`CARGO_TARGET_DIR`) inside the sandbox, so a mounted project's `target/` isn't shared with host builds; that output is lost when the sandbox is removed. Package registries still need network allows, such as `**.rubygems.org` in `allowedHosts`; the launcher applies changes to that list on the next launch or resume, with no rebuild.
+
+To reach an app from a host browser, start it listening on all interfaces, not just localhost, then publish its port while the sandbox is running. For a Rails app on port 3000, from host terminals:
+
+```sh
+mise run sbx exec -it <name> env BINDING=0.0.0.0 bin/setup   # sets up the app, then starts the server
+mise run sbx ports <name> --publish 3000:3000                 # then open http://localhost:3000
+mise run sbx ports <name>                                     # list published ports
+mise run sbx ports <name> --unpublish 3000:3000
+```
+
+`bin/setup` installs gems, prepares the database and starts the server via `bin/dev`. Rails' development server listens only on localhost unless `BINDING` (or `-b`) says otherwise. `sbx exec` and `sbx ports` pass straight through to sbx; `exec` runs in the workspace with mise's shims on PATH. The default `tcp4` suits a server listening on `0.0.0.0`; a published port is inbound and unaffected by the sandbox's network policy.
 
 ## Development
 

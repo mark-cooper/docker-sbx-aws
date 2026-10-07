@@ -89,6 +89,16 @@ try {
           await call("sbx", ["exec", name, ...shell]),
           /(^|:)\/home\/agent\/\.local\/share\/mise\/shims:/,
         );
+      assert.equal(
+        await call("sbx", [
+          "exec",
+          name,
+          "bash",
+          "-lc",
+          'echo "$MISE_IDIOMATIC_VERSION_FILE_ENABLE_TOOLS $CARGO_TARGET_DIR"',
+        ]),
+        "ruby,node,rust /home/agent/.cache/cargo-target",
+      );
       await boot("tools");
       await call("sbx", [
         "exec",
