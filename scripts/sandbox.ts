@@ -16,8 +16,9 @@ const help = `Usage:
   mise run sbx run --name <sandbox> [<agent>]
       Reattach to a managed sandbox from anywhere, renewing its AWS session when under
       renewWithinSeconds (config/runtime.json) remain. <agent> is optional and only confirms it matches the sandbox.
-  mise run sbx rm <sandbox>
-      Stop and remove a managed sandbox.
+  mise run sbx rm [--force] <sandbox>
+      Stop and remove a managed sandbox. --force also forgets one that sbx no longer
+      lists, such as one removed with sbx directly.
   mise run sbx <any other sbx command>
       Passed to sbx unchanged (ls, stop, ...).
 
@@ -145,7 +146,7 @@ async function sbx(args: string[]): Promise<void> {
     const names = rest.filter((arg) => arg !== "--force" && arg !== "-f");
     if (names.length !== 1 || !(await managed(names[0])))
       throw new Error("Remove one managed sandbox at a time.");
-    return destroy(names[0]);
+    return destroy(names[0], execute, names.length !== rest.length);
   }
   return passThrough(args);
 }

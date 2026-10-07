@@ -122,6 +122,7 @@ Each launch prints its name and credential expiry. The sandbox is retained after
 ```sh
 mise run sbx run --name <name>  # reattach
 mise run sbx rm <name>
+mise run sbx rm --force <name>  # also forgets one already removed with sbx directly
 ```
 
 Resume reattaches to a ready session, first repeating the host checks (sbx version/settings, stored secrets, network policy). If less than `renewWithinSeconds` (default 15 minutes) of the AWS session remain, it reassumes the restricted role on the host and hands the new session to the sandbox; new shells then use it. This needs a valid upstream `aws login` and only happens on resume, not while an agent is running. `mise run sbx run --name <name>` reattaches from anywhere — `--name` is recognized regardless of position, so `mise run sbx run <agent> --name <name>` also reattaches, with `<agent>` only confirming a match (a mismatch is rejected). The same command without mise skips the checks and never renews credentials. A sandbox is managed when the launcher holds live session metadata for it, whatever its name; a bare `--name` for any other sandbox is passed straight through to `sbx`.

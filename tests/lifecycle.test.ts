@@ -381,6 +381,21 @@ test("a launch that fails during creation can still be destroyed", async () =>
     assert.equal((await loadState(name)).phase, "destroyed");
     assert.ok(!calls.some((c) => c.args[0] === "rm"));
   }));
+test("a ready sandbox removed outside the launcher is forgotten only with force", async () =>
+  fixture(async ({ project, run, calls }) => {
+    const name = await launch(target, { agent: "claude", project }, run);
+    await run("sbx", ["rm", "--force", name]); // sbx rm directly
+    await assert.rejects(resume(name, run), /sbx rm --force/);
+    await assert.rejects(launch(target, { agent: "claude", project }, run), /sbx rm --force/);
+    await assert.rejects(destroy(name, run), /sbx rm --force/);
+    assert.equal((await loadState(name)).phase, "ready");
+    const before = calls.length;
+    await destroy(name, run, true);
+    assert.equal((await loadState(name)).phase, "destroyed");
+    assert.ok(!calls.slice(before).some((c) => c.args[0] === "stop" || c.args[0] === "rm"));
+    // The name can then be launched again.
+    assert.equal(await launch(target, { agent: "claude", project }, run), name);
+  }));
 test("without a project path the workspace starts empty and never touches the current directory", async () =>
   fixture(async ({ run, calls }) => {
     const name = await launch(target, { agent: "claude" }, run);

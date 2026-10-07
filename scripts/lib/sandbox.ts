@@ -519,9 +519,7 @@ export async function resume(
   const { grants, sandboxes } = await hostChecks(run, runtime, !!state.target);
   reportGrants(grants);
   if (!sandboxes.includes(name))
-    throw new Error(
-      "Sandbox not found in this sbx setup; check that you are using the setup it was launched from.",
-    );
+    throw new Error(missingMessage(name));
   await applyNetworkPolicy(run, name, allowed, denied);
   if (state.project) await installTools(run, name);
   const remaining = Date.parse(state.expiresAt ?? "") - Date.now();
@@ -538,16 +536,19 @@ export async function resume(
   await attach(run, name);
 }
 
-export async function destroy(name: string, run: Runner = execute): Promise<void> {
+// A ready sandbox sbx does not list may live in another sbx setup, or may have
+// been removed with sbx directly; only the developer can tell which.
+function missingMessage(name: string): string {
+  return `Sandbox ${name} not found in this sbx setup; check that you are using the setup it was launched from. If it was removed outside this launcher, forget it with mise run sbx rm --force ${name}.`;
+}
+
+// force forgets a ready sandbox that sbx no longer lists.
+export async function destroy(name: string, run: Runner = execute, force = false): Promise<void> {
   const state = await loadState(name);
   if (state.phase === "destroyed") throw new Error("Sandbox was already destroyed.");
   if (!(await exists(run, name))) {
     // A launch that failed before or during creation has no sandbox to stop.
-    // A ready session that is missing may live in a different sbx setup.
-    if (state.phase === "ready")
-      throw new Error(
-        "Sandbox not found in this sbx setup; check that you are using the setup it was launched from.",
-      );
+    if (state.phase === "ready" && !force) throw new Error(missingMessage(name));
     state.phase = "destroyed";
     await saveState(state);
     console.log(`${name} was never created or is already gone; metadata marked destroyed.`);
