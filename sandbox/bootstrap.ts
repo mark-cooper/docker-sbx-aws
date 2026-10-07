@@ -32,12 +32,13 @@ function execute(
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
   input?: string,
+  timeout = 120_000,
 ): string {
   const result = spawnSync(command, args, {
     env,
     input,
     encoding: "utf8",
-    timeout: 120_000,
+    timeout,
     maxBuffer: 16 * 1024 * 1024,
   });
   if (result.status !== 0) throw new Error(`Sandbox ${command} operation failed.`);
@@ -133,6 +134,11 @@ try {
     if (spawnSync("sudo", ["grep", "-qxF", source, persistent]).status !== 0)
       execute("sudo", ["tee", "-a", persistent], process.env, `\n${source}\n`);
     console.log(JSON.stringify({ identity: actual, expiration: c.Expiration }));
+  } else if (command === "tools") {
+    // Installs the workspace's mise tools before the agent starts; the template
+    // puts their shims on PATH. mise trusts the config it installs from.
+    execute("mise", ["install", "--yes"], cleanAwsEnv(), undefined, 1_200_000);
+    console.log("installed");
   } else if (command === "probe-network") {
     // Require a real proxy denial, not an arbitrary DNS or connectivity failure.
     const proxy = process.env.HTTPS_PROXY ?? process.env.https_proxy;

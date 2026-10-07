@@ -13,7 +13,11 @@ COPY sandbox/bootstrap.ts /opt/readonly-sandbox/bootstrap.ts
 RUN ln -sf /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws \
  && apt-get update \
  && apt-get install -y --no-install-recommends libatomic1 \
- && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && printf '%s\n' 'case ":$PATH:" in *:/home/agent/.local/share/mise/shims:*) ;; *) export PATH="/home/agent/.local/share/mise/shims:$PATH" ;; esac' >> /etc/sandbox-persistent.sh
+# mise shims come first for the agent itself and, via the persistent file
+# above, for every shell, including login shells that reset PATH.
+ENV PATH=/home/agent/.local/share/mise/shims:$PATH
 RUN node --version && aws --version && git --version && jq --version && mise --version
 USER agent
 WORKDIR /home/agent/workspace

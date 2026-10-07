@@ -27,6 +27,8 @@ import {
 } from "./state.ts";
 
 const bootstrap = "/opt/readonly-sandbox/bootstrap.ts";
+// The template's own Node, never a project's mise shim of another version.
+const node = "/usr/local/bin/node";
 export interface LaunchOptions {
   agent: string;
   project?: string;
@@ -259,9 +261,9 @@ function inside(
   run: Runner,
   name: string,
   command: string,
-  options: { input?: string; cwd?: string } = {},
+  options: { input?: string; cwd?: string; timeout?: number } = {},
 ): Promise<string> {
-  const { input, cwd } = options;
+  const { input, cwd, timeout } = options;
   return sbx(
     run,
     [
@@ -269,12 +271,23 @@ function inside(
       ...(input ? ["-i"] : []),
       ...(cwd ? ["--workdir", cwd] : []),
       name,
-      "node",
+      node,
       bootstrap,
       command,
     ],
     `Sandbox ${command}`,
-    { input },
+    { input, timeout },
+  );
+}
+// Install the project's mise tools so they work as soon as the agent starts.
+// It is a no-op once they are installed. A failure, such as a download the
+// network policy blocks, only warns: the agent can still run mise install.
+async function installTools(run: Runner, name: string): Promise<void> {
+  console.log(`Installing the project's mise tools in ${name}.`);
+  await inside(run, name, "tools", { timeout: 1_260_000 }).catch(() =>
+    console.warn(
+      "Warning: mise install failed in the sandbox; run it there to see why. Tools it needs to download may require network allows.",
+    ),
   );
 }
 
@@ -437,6 +450,8 @@ async function prepareSandbox(
     throw new Error("Unexpected template working directory or user.");
   await applyNetworkPolicy(run, name, allowed, denied);
   await probeInside(run, name);
+  // Before any AWS session reaches the sandbox.
+  if (project) await installTools(run, name);
 }
 
 function launchMismatch(
@@ -508,6 +523,7 @@ export async function resume(
       "Sandbox not found in this sbx setup; check that you are using the setup it was launched from.",
     );
   await applyNetworkPolicy(run, name, allowed, denied);
+  if (state.project) await installTools(run, name);
   const remaining = Date.parse(state.expiresAt ?? "") - Date.now();
   // Sessions this close to expiry are renewed before reattaching.
   if (state.target && !(remaining > runtime.renewWithinSeconds * 1000)) {

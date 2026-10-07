@@ -79,6 +79,17 @@ try {
       await call("sbx", ["exec", name, "rm", "-r", "/home/agent/.claude/skills/planted"]);
       await boot("check");
       await boot("probe-network");
+      // mise shims are on PATH for the agent and for login shells, which
+      // reset PATH; with no project tools to download, install succeeds offline.
+      for (const shell of [
+        ["printenv", "PATH"],
+        ["bash", "-lc", 'echo "$PATH"'],
+      ])
+        assert.match(
+          await call("sbx", ["exec", name, ...shell]),
+          /(^|:)\/home\/agent\/\.local\/share\/mise\/shims:/,
+        );
+      await boot("tools");
       await call("sbx", [
         "exec",
         name,

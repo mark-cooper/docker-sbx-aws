@@ -42,6 +42,7 @@ async function fixture(
       denyAws: boolean;
       broadPolicy: boolean;
       injectFails: boolean;
+      toolsFail: boolean;
       createFails: boolean;
       forwarding: boolean;
       mcpServers: number;
@@ -62,6 +63,7 @@ async function fixture(
       denyAws: false,
       broadPolicy: false,
       injectFails: false,
+      toolsFail: false,
       createFails: false,
       forwarding: false,
       mcpServers: 0,
@@ -207,6 +209,9 @@ async function fixture(
       else if (command === "inject") {
         result = { identity };
         if (control.injectFails) code = 1;
+      } else if (command === "tools") {
+        result = "installed";
+        if (control.toolsFail) code = 1;
       } else result = "blocked";
     }
     return {
@@ -243,6 +248,13 @@ test("launch orders checks before handoff, keeps secrets on stdin, and mounts th
       calls.findIndex((c) => c.args.at(-1) === "probe-network") <
         calls.findIndex((c) => c.args.at(-1) === "inject"),
     );
+    // The project's mise tools are installed after the network checks, before
+    // the handoff, by the template's Node rather than a project shim.
+    const tools = calls.findIndex((c) => c.args.at(-1) === "tools");
+    assert.ok(calls.findIndex((c) => c.args.at(-1) === "probe-network") < tools);
+    assert.ok(tools < calls.findIndex((c) => c.args.at(-1) === "inject"));
+    for (const call of calls.filter((c) => c.args[0] === "exec"))
+      assert.equal(call.args.at(-3), "/usr/local/bin/node");
     // The allowlist is added in one call, and so are metadata and the blocks.
     assert.equal(calls.filter((c) => c.args[1] === "allow").length, 1);
     const denyCalls = calls.filter((c) => c.args[0] === "policy" && c.args[1] === "deny");
@@ -336,6 +348,23 @@ test("legacy clone sessions cannot be destroyed by the new launcher", async () =
     await assert.rejects(destroy(name, run), /Legacy sandbox session/);
     assert.ok(!calls.some((c) => c.args[0] === "rm"));
   }));
+test("a failed mise install warns but still hands off and attaches, on launch and resume", async () =>
+  fixture(async ({ project, run, calls, control }) => {
+    control.toolsFail = true;
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (message: string) => warnings.push(message);
+    try {
+      const name = await launch(target, { agent: "claude", project }, run);
+      await resume(name, run);
+    } finally {
+      console.warn = warn;
+    }
+    assert.equal(calls.filter((c) => c.args.at(-1) === "tools").length, 2);
+    assert.equal(warnings.filter((w) => w.includes("mise install failed")).length, 2);
+    assert.ok(calls.some((c) => c.args.at(-1) === "inject"));
+    assert.equal(calls.filter((c) => c.args[0] === "run").length, 2);
+  }));
 test("a sandbox failure is reported over a concurrent role assumption failure", async () =>
   fixture(async ({ project, run, calls, control }) => {
     control.createFails = true;
@@ -358,6 +387,7 @@ test("without a project path the workspace starts empty and never touches the cu
     assert.ok(!calls.some((c) => c.tool === "git" && c.args[0] === "rev-parse"));
     assert.ok(!calls.some((c) => c.args[0] === "cp"));
     assert.ok(!calls.some((c) => c.args.at(-1) === "init"));
+    assert.ok(!calls.some((c) => c.args.at(-1) === "tools"));
     const create = calls.find((c) => c.args[0] === "create")!;
     assert.equal(create.args.at(-1), "claude");
     const state = await loadState(name);

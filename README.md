@@ -113,6 +113,8 @@ Resume applies the current list to an existing sandbox before checking it, so al
 
 **Project mode** is selected by passing a path after the agent, mounting that directory for host edits — the agent can read and change files there immediately, including uncommitted and ignored ones. Don't choose a directory containing credentials or private keys; host home and its ancestors are rejected as project roots.
 
+In project mode the launcher runs `mise install` in the workspace on launch and on every resume, before any AWS session is handed over, so the project's mise tools are ready when the agent starts. If it fails, for example because the network policy blocks a download, you get a warning and the launch carries on; run `mise install` in the sandbox to see why. The templates put mise's shims first on PATH for the agent and for every shell, so `.tool-versions`, `.ruby-version` and `mise.toml` choose the versions without needing `mise activate`. Bootstrap commands run with the template's own Node, not a project's.
+
 Like sbx, a sandbox is named `<agent>-<directory>` after the project directory, or after the current directory in empty mode (lowercased, with other characters replaced by hyphens); `--name` chooses any other lowercase name. Running the same launch again reattaches to that sandbox, but only if the agent, path and AWS profile, role and region all match — otherwise it is refused, so pick another `--name` or remove the old sandbox. A name already used by a sandbox this launcher didn't create is refused too.
 
 Each launch prints its name and credential expiry. The sandbox is retained after the agent exits:

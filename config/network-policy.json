@@ -9,7 +9,13 @@
     ],
     "codex": ["api.openai.com", "auth.openai.com", "chatgpt.com"]
   },
-  "allowedHosts": ["docs.aws.amazon.com", "docs.docker.com", "www.loc.gov", "mise.jdx.dev"],
+  "allowedHosts": [
+    "docs.aws.amazon.com",
+    "docs.docker.com",
+    "www.loc.gov",
+    "mise.jdx.dev",
+    "rubygems.org"
+  ],
   "blockedHosts": [
     "pypi.org",
     "pypi.python.org",
