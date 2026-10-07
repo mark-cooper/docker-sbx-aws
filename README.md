@@ -54,13 +54,13 @@ npm ci --ignore-scripts  # development/typechecking only
 mise run build_all  # or one agent: mise run build <agent>
 ```
 
-Each `sandbox/Dockerfile.<agent>` is a self-contained, independently buildable multi-stage build: it starts from Docker's upstream template for that agent, pinned by digest, then layers in Node, AWS CLI, and mise from their own pinned upstream images. Every agent Dockerfile shares an identical body — only the first `FROM ... AS base` line differs — and a test (`tests/dockerfiles.test.ts`) fails CI if they ever drift apart. Builds load into the separate sandbox image store and can take several minutes; they use no AWS credentials.
+Each `sandbox/Dockerfile.<agent>` is a self-contained, independently buildable multi-stage build: it starts from the `-docker` variant of Docker's upstream template for that agent (e.g. `claude-code-docker`), pinned by digest — the plain variants ship only the Docker CLI, so the sandbox would get no Docker Engine — then layers in Node, AWS CLI, and mise from their own pinned upstream images. Every agent Dockerfile shares an identical body — only the first `FROM ... AS base` line differs — and a test (`tests/dockerfiles.test.ts`) fails CI if they ever drift apart. Builds load into the separate sandbox image store and can take several minutes; they use no AWS credentials.
 
 Dependabot opens a PR when a newer upstream image is available, updating tag and digest together; CI builds every Dockerfile on each PR. After merging an upgrade, or after changing `sandbox/bootstrap.ts` (bump the template tags in [config/runtime.json](config/runtime.json) so stale templates aren't used), run `mise run build_all` and `npm run test:runtime` to load and test the new templates — running sessions are unaffected.
 
 ### Adding an agent
 
-1. Add `sandbox/Dockerfile.<agent>` starting `FROM` Docker's sandbox template for that agent, pinned by digest, followed by the same lines as the existing agent Dockerfiles (`tests/dockerfiles.test.ts` will fail if it diverges).
+1. Add `sandbox/Dockerfile.<agent>` starting `FROM` the `-docker` variant of Docker's sandbox template for that agent, pinned by digest, followed by the same lines as the existing agent Dockerfiles (`tests/dockerfiles.test.ts` will fail if it diverges).
 2. Add a template to [config/runtime.json](config/runtime.json) keyed by the agent name, with its `tag` and, if sbx manages a model secret for it, `modelSecret` (the sbx service secret name, e.g. `anthropic`). The template keys are the supported agents.
 3. Add its model/auth hosts to [config/network-policy.json](config/network-policy.json). `tests/config.test.ts` fails if templates, Dockerfiles and network hosts don't list the same agents.
 
@@ -138,6 +138,7 @@ The templates include compilers (`build-essential`, `pkg-config`) and the header
 To reach an app from a host browser, start it listening on all interfaces, not just localhost, then publish its port while the sandbox is running. For a Rails app on port 3000, from host terminals:
 
 ```sh
+mise run sbx exec -it <name> docker compose up -d db
 mise run sbx exec -it <name> env BINDING=0.0.0.0 bin/setup   # sets up the app, then starts the server
 mise run sbx ports <name> --publish 3000:3000                 # then open http://localhost:3000
 mise run sbx ports <name>                                     # list published ports

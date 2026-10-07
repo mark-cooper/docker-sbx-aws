@@ -10,11 +10,30 @@
     "codex": ["api.openai.com", "auth.openai.com", "chatgpt.com"]
   },
   "allowedHosts": [
+    "**.archivesspace.org",
+    "**.collectionspace.org",
+    "**.dspace.org",
+    "**.dspacedirect.org",
+    "**.duracloud.org",
+    "**.rubygems.org",
+    "api.rubyonrails.org",
+    "crates.io",
+    "daisyui.com",
+    "dev.mysql.com",
+    "developer.hashicorp.com",
     "docs.aws.amazon.com",
     "docs.docker.com",
-    "www.loc.gov",
+    "docs.ruby-lang.org",
+    "edgeapi.rubyonrails.org",
+    "edgeguides.rubyonrails.org",
+    "guides.rubyonrails.org",
     "mise.jdx.dev",
-    "**.rubygems.org"
+    "registry.terraform.io",
+    "rubydoc.info",
+    "tailwindcss.com",
+    "www.loc.gov",
+    "www.postgresql.org",
+    "www.ruby-lang.org"
   ],
   "blockedHosts": [
     "pypi.org",
